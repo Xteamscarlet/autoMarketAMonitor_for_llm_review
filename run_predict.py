@@ -16,7 +16,7 @@ def main():
     parser = argparse.ArgumentParser(description="集成预测")
     parser.add_argument('--codes', nargs='+', default=None, help='指定股票代码列表')
     parser.add_argument('--pool', action='store_true', help='使用 stock_pool.json 中的股票池')
-    parser.add_argument('--top', type=int, default=20, help='输出前N只股票')
+    parser.add_argument('--top', type=int, default=30, help='输出前N只股票')
     parser.add_argument('--output', type=str, default='stock_predictions.json', help='输出文件路径')
     parser.add_argument('--notify', action='store_true', help='发送企业微信通知')
     args = parser.parse_args()

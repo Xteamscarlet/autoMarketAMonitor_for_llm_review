@@ -287,7 +287,8 @@ if __name__ == "__main__":
         if STOCK_CODES.get(name)
     ]
 
-    use_processes = 1  # GPU推理建议单进程
+    # use_processes = 1  # GPU推理建议单进程
+    use_processes = max(1, cpu_count() -1 )
     with Pool(processes=use_processes, initializer=init_worker, initargs=(market_data, stocks_data)) as pool:
         raw_results = list(tqdm(pool.imap(process_single_stock, stock_list), total=len(stock_list), desc="进度"))
 

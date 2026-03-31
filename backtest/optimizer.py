@@ -15,7 +15,6 @@ import optuna
 from sklearn.model_selection import TimeSeriesSplit
 
 from data.types import NON_FACTOR_COLS
-from data.indicators import calculate_orthogonal_factors
 from backtest.engine import run_backtest_loop
 from backtest.evaluator import calculate_comprehensive_stats
 from config import get_settings
@@ -115,7 +114,12 @@ def optimize_strategy(
 ) -> Tuple[Dict[str, dict], Dict[str, float]]:
     """参数优化（单次，无交叉验证）"""
     from data.indicators import calculate_orthogonal_factors
-    df = calculate_orthogonal_factors(train_df, stock_code)
+    # ✅ 防御性检查：如果外面忘记算因子了，这里兜底算一下
+    # 正常情况下，process_single_stock 传进来的 train_df 已经有因子了，不会走这里
+    if 'transformer_prob' not in train_df.columns or 'mom_10' not in train_df.columns:
+        print(f" [警告] {stock_code} 传入 optimize_strategy 的数据缺少因子列，正在补充计算...")
+        df = calculate_orthogonal_factors(train_df, stock_code)
+
     factor_cols = [col for col in df.columns if col not in NON_FACTOR_COLS]
     weights = calculate_dynamic_weights(df, factor_cols)
 
