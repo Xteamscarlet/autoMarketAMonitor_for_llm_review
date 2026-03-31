@@ -126,6 +126,11 @@ def run_advisor():
             if buy_price > 0:
                 buy_date = datetime.strptime(buy_date_str, '%Y-%m-%d') if buy_date_str else datetime.now()
                 hold_days = (datetime.now() - buy_date).days
+                # ===== 新增 T+1 限制 开始 =====
+                if hold_days < 1:
+                    logger.info(f"{name} ({code}) 持仓不足1天，受T+1限制，暂不建议卖出")
+                    continue  # 跳过本次循环，不生成卖出建议
+                # ===== 新增 T+1 限制 结束 =====
                 profit_pct = (current_price - buy_price) / buy_price
 
                 # 记录当前持仓

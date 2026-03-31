@@ -198,7 +198,11 @@ def run_backtest_loop(
                 peak = price
 
             sell_reason = None
-
+            # ===== 新增 T+1 限制 =====
+            if buy_date is not None and date <= buy_date:
+                # 如果当前日期 <= 买入日期，说明是同一天，禁止卖出
+                continue  # 或者 pass，取决于你的循环结构，确保不执行卖出
+            # =========================
             # AI 强烈看空
             if transformer_prob < 0.3:
                 sell_reason = 'ai_bearish'
