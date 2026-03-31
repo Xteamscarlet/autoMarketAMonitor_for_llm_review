@@ -128,8 +128,12 @@ def run_backtest_loop(
 
     current_weights = weights.copy()
     last_weight_update = 60
-    buy_slippage_rate = SlippageConfig.buy_slippage_rate
-    sell_slippage_rate = SlippageConfig.sell_slippage_rate
+    # engine.py（在 run_backtest_loop 函数内或模块级）
+    _slippage_cfg = SlippageConfig.from_env()  # 用 .env 里的配置
+
+    # 然后用实例属性
+    buy_slippage_rate = _slippage_cfg.buy_slippage_rate
+    sell_slippage_rate = _slippage_cfg.sell_slippage_rate
     for i in range(60, len(df)):
         date = df.index[i]
         price = df['Close'].iloc[i]
