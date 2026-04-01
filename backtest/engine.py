@@ -830,7 +830,49 @@ def run_backtest_loop_compatible(
     if "backtest_trade_shares" in result_df.columns:
         trade_mask = result_df["backtest_trade_shares"] != 0
         if trade_mask.any():
-            # TODO: 构造 trades_df（可选）
-            pass
+            trades_df = result_df[trade_mask].copy()
+
+            # 1. 还原基础信息
+            trades_df["date"] = trades_df.index
+            trades_df["stock_code"] = stock_code
+
+            # 2. 交易方向：正数为买入，负数为卖出
+            trades_df["action"] = np.where(trades_df["backtest_trade_shares"] > 0, "buy", "sell")
+
+            # 3. 交易价格（兼容大小写 Close/close）
+            price_col = "Close" if "Close" in trades_df.columns else "close"
+            trades_df["price"] = trades_df[price_col]
+
+            # 4. 交易股数和交易金额
+            trades_df["shares"] = trades_df["backtest_trade_shares"]
+            trades_df["value"] = trades_df["shares"].abs() * trades_df["price"]
+
+            # 5. 交易成本
+            # 【注意】这里优先取向量化引擎输出的真实成本。
+            # 如果你之前的 run_backtest_loop_vectorized 里没有把成本存进 df，这里会走简单估算。
+            if "backtest_trade_cost" in trades_df.columns:
+                trades_df["cost"] = trades_df["backtest_trade_cost"]
+            else:
+                # 容错：如果没有真实成本列，暂时填 0.0（建议看下方提示补充真实成本）
+                trades_df["cost"] = 0.0
+
+            # 6. 附加信息（可选：如果 df 里保留了当时的信号得分和市场状态，一并带出）
+            if "Combined_Score" in trades_df.columns:
+                trades_df["signal_score"] = trades_df["Combined_Score"]
+            if "curr_regime" in trades_df.columns:
+                trades_df["regime"] = trades_df["curr_regime"]
+
+            # 7. 整理最终输出列（保持和你原来逐行回测输出的 trades_df 列名一致）
+            output_cols = ["date", "stock_code", "action", "price", "shares", "value", "cost"]
+            for extra_col in ["signal_score", "regime", "target_position_ratio"]:
+                if extra_col in trades_df.columns:
+                    output_cols.append(extra_col)
+
+            trades_df = trades_df[output_cols].reset_index(drop=True)
+        else:
+            # 没有任何交易发生
+            trades_df = pd.DataFrame(columns=["date", "stock_code", "action", "price", "shares", "value", "cost"])
+    else:
+        trades_df = None
 
     return trades_df, stats, result_df
