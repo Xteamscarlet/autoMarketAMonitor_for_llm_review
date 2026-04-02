@@ -282,7 +282,7 @@ def run_backtest_loop(
                     'reason': sell_reason,
                     'shares': shares,
                     'signal_strength': signal_strength if has_pred_ret else 1.0,
-                    'confidence': df['transformer_conf'].iloc[buy_date] if has_transformer_conf else None,
+                    'confidence': df['transformer_conf'].loc[buy_date] if has_transformer_conf else None,
                 })
                 position = 0
 
