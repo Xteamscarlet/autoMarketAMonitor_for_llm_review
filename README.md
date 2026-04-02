@@ -1,3 +1,30 @@
+# AutoTrade for LLM Review
+
+> **⚠️ 强烈免责声明**：本项目仅供**学习、研究以及大语言模型（LLM）代码审查的测试基底**使用。量化交易存在极高风险，本系统的回测结果不代表未来收益，**绝对不要直接将本代码连接至实盘交易账户进行自动下单**。因使用本项目造成的任何资金损失，开发者概不负责。
+
+本项目是一个基于深度学习与经典量化策略的 A 股智能选股与仓位管理系统。整体架构按照“数据清洗 -> 特征工程 -> 模型训练 -> 滑点/成本回测 -> 实盘信号生成”的标准闭环打造，非常适合作为 LLM 进行复杂金融代码审查的基准项目。
+
+---
+
+## ✨ 核心特性
+
+- **严谨的数据管线**：基于 `efinance`/`akshare` 下载 A 股日线数据，统一在 `data/indicators.py` 中计算纯量技术指标，并做严格的缺失值与异常值处理。
+- **时序 Transformer 模型**：使用自定义的 Transformer 编码器进行趋势分类预测（`model/transformer.py`），训练过程集成了 EMA（指数移动平均）、SWA（随机权重平均）以及 TopK 集成策略。
+- **防过拟合的回测引擎**：采用 **Walk-Forward（滚动前推）** 划分数据，并设置了 `gap=20` 天的隔离带，从根本上阻断“未来数据泄露”。
+- **Optuna 多目标优化**：针对复合信号策略，使用 Optuna 同时优化夏普比率、最大回撤等多个维度，避免陷入单一收益指标的过拟合陷阱。
+- **双层风控机制**：
+  - **硬限制**（绝对不可违背）：单只股票最大持仓比例、行业集中度限制（`risk_manager.py`）。
+  - **软目标**（用于回测过滤）：最大回撤容忍度、最小利润因子等。
+- **实盘 Advisor 模式**：不直接对接券商 API，而是读取本地 `my_portfolio.json`（真实持仓），输出结合了模型预测、技术信号和风险敞口的“买卖建议+建议股数”，支持 `--dry-run` 调试。
+
+---
+
+## 🚀 快速开始
+
+### 1. 环境准备
+
+
+
 ```bash```
 
 1. 克隆项目
@@ -28,346 +55,129 @@ ta-lib 如果 pip 安装失败，参考：https://github.com/ta-lib/ta-lib-pytho
 │ └── *.pth
 └── stock_data_cleaned.feather → 复制到 autotrade/
 
+### 2. 配置环境变量（⚠️ 极其重要）
 
-复制后的目录结构：
-autotrade/
-├── model_weights.pth ✅ EMA最佳模型（实盘推荐）
-├── swa_model_weights.pth ✅ SWA模型（回测对比用）
-├── per_stock_scalers.pkl ✅ 股票独立scaler
-├── global_scaler.pkl ✅ 全局scaler（ unseen股票fallback）
-├── checkpoints/ ✅ TopK集成模型
-│ └── model_epoch*_loss*.pth
-├── stock_data_cleaned.feather ✅ 训练数据
-├── .env
-└── …
+**安全警告**：本项目已将 `.env` 从 Git 追踪中移除。请勿将包含真实 Webhook 或账户信息的 `.env` 文件提交到公共仓库。
 
+在项目根目录创建 `.env` 文件，参考以下模板（修复了原代码中滑点配置复用佣金字段的歧义）：
 
-> **为什么直接放根目录就行？** `.env` 中的路径配置默认值就是这些文件名，零配置即可识别。
-> 如果你想放到其他位置，修改 `.env` 中对应的路径即可。
+```bash```
 
-## 配置说明
+env
 
-所有参数通过 `.env` 文件管理，修改参数**不需要改任何代码**。
+=== 模型与训练配置 ===
+LEARNING_RATE=0.0001
+BATCH_SIZE=64
+EPOCHS=50
+NUM_CLASSES=4
+DROPOUT=0.1
+LABEL_SMOOTHING=0.1
 
-bash
+=== 交易成本与滑点 (注意: 这里显式区分) ===
+COMMISSION_RATE=0.0003
+MIN_COMMISSION=5.0
+STAMP_DUTY_RATE=0.001
+TRANSFER_FEE_RATE=0.00002
 
-.env 文件关键配置项
----- 代理（国内需要） ----
-HTTP_PROXY=http://127.0.0.1:6789
-HTTPS_PROXY=http://127.0.0.1:6789
+修正：直接使用明确的滑点率，而不是复用其他字段
+BUY_SLIPPAGE_RATE=0.0015
+SELL_SLIPPAGE_RATE=0.0015
 
----- 模型超参 ----
-LOOKBACK_DAYS=120 # 回看天数（改这个必须重新训练）
-BATCH_SIZE=256
-EPOCHS=7
-LEARNING_RATE=3e-5
+=== 风控配置 ===
+MAX_SINGLE_STOCK_WEIGHT=0.25
+MAX_INDUSTRY_WEIGHT=0.40
 
----- 风控阈值 ----
-MAX_DRAWDOWN_LIMIT=-20.0 # 最大回撤限制（%）
-MIN_PROFIT_FACTOR=1.5 # 最小利润因子
-MAX_POSITION_RATIO=0.3 # 单只最大仓位
-MIN_WIN_RATE=40.0 # 最小胜率（%）
-MIN_TRADES=15 # 最小交易次数
+=== 回测与优化配置 ===
+WALK_FORWARD_TRAIN_YEARS=3
+WALK_FORWARD_TEST_MONTHS=6
+WALK_FORWARD_GAP_DAYS=20
+OPTUNA_TRIALS=150
 
----- 回测参数 ----
-N_OPTUNA_TRIALS=150 # Optuna试验次数（越大越慢越准）
-N_SPLITS=5 # Walk-Forward折数
-
----- 文件路径 ----
-MODEL_PATH=model_weights.pth
-SCALER_PATH=per_stock_scalers.pkl
-STRATEGY_FILE=optimized_strategies.json
-PORTFOLIO_FILE=my_portfolio.json
+=== 实盘通知 (选填) ===
+WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
 
 
-## 完整使用流程
+### 3. 标准执行流程
 
-### 第一步：数据下载
+按顺序执行以下脚本，完成从数据到建议的闭环：
 
-bash
-
-方式A：只下载配置中的24只股票（快速，约5分钟）
+Step 1: 下载数据 (会生成 .feather 缓存文件，已在 .gitignore 中忽略)
 python run_data_download.py
 
-方式B：下载全量A股（慢，约数小时，用于重新训练）
-python run_data_download.py --all --batch-size 50
-
-方式C：指定股票代码
-python run_data_download.py --codes 601127 002241 600519
-
-方式D：已有旧数据文件，跳过此步
-
-输出文件：`stock_data_cleaned.feather`
-
-### 第二步：训练模型
-
-bash
-
-方式A：直接训练（使用 .env 中的参数）
+Step 2: 训练模型 (生成 model_weights.pth 等)
 python run_train.py
 
-方式B：先检查环境再训练
-python run_train.py --dry-run # 检查数据、GPU等是否就绪
-python run_train.py # 确认无误后正式训练
-
-方式C：训练完发送企业微信通知
-python run_train.py --notify
-
-方式D：已有旧模型，跳过此步
-
-输出文件：
-- `model_weights.pth` — EMA最佳模型（**实盘用这个**）
-- `swa_model_weights.pth` — SWA模型（泛化更好，可对比）
-- `per_stock_scalers.pkl` — 每只股票独立的标准化器
-- `global_scaler.pkl` — 全局标准化器（用于未见过的新股票）
-- `checkpoints/` — TopK集成模型（3个）
-
-### 第三步：回测优化
-
-bash
-
-执行完整回测流程：
-1. Walk-Forward划分（5折，gap=20天防泄露）
-2. Optuna多目标优化（每个市场状态150次试验）
-3. 双层风控过滤（硬限制+软目标9项指标）
-4. 生成可视化图表
+Step 3: 滚动回测与策略优化 (生成 optimized_strategies.json)
 python run_backtest.py
 
+Step 4: 基于最新模型生成全市场预测 (生成 stock_predictions.json)
+python run_predict.py
 
-输出文件：
-- `optimized_strategies.json` — 每只股票的最优参数和因子权重
-- `stock_cache/optimized_strategy_results/backtest_charts/` — 可视化图表
-
-终端输出示例：
-测试集汇总报告 (含9项指标)
-──────────────────────────────────────────────────────────────
-名称 收益% 胜率% 交易数 夏普 最大回撤% 利润因子 Sortino Calmar
-──────────────────────────────────────────────────────────────
-
-贵州茅台 12.35 55.00 20 1.82 -5.20 2.15 2.45 2.38
-
-赛力斯 8.72 50.00 18 1.45 -8.10 1.85 1.92 1.08
-…
-──────────────────────────────────────────────────────────────
-组合总收益: 15.23%
-组合夏普: 1.65 | 最大回撤: -6.80% | 利润因子: 2.05
+Step 5: 运行实盘 Advisor (需先手动创建 my_portfolio.json)
+python run_advisor.py --dry-run -v
 
 
-> **注意**：如果某只股票的风控软目标未通过（如最大回撤>20%、利润因子<1.5），
-> 会被自动过滤，不会出现在 `optimized_strategies.json` 中。
+---
 
-### 第四步：预测评分
+## 📂 项目结构说明 (针对 LLM Review 优化)
 
-bash
-
-方式A：预测配置中的股票池
-python run_predict.py --pool
-
-方式B：预测指定股票
-python run_predict.py --codes 601127 002241 600519 000725
-
-方式C：只看TOP 10
-python run_predict.py --pool --top 10
-
-方式D：并发送企业微信
-python run_predict.py --pool --notify
+本目录结构专门为代码审查工具做了高内聚、低耦合的设计：
 
 
-输出示例：
-排名 代码 趋势 概率 预测收益 综合得分 分歧度 模型数 Scaler
-──────────────────────────────────────────────────────────────────
-1 601127 上涨 68.3% +3.25% +0.0221 0.0312 5 专用
-2 002241 上涨 62.1% +2.10% +0.0130 0.0285 5 专用
-3 600519 上涨 58.7% +1.85% +0.0109 0.0350 4 全局
-…
+```text```
+
+├── config.py # 【核心】全局配置中心，基于 dataclass，从 .env 注入
+├── run_*.py # 各模块的启动入口脚本
+├── data/
+│ ├── loader.py # 数据加载与合并
+│ ├── indicators.py # 【唯一真理源】所有技术指标（MA, MACD, RSI等）的计算逻辑
+│ ├── normalize.py # 特征归一化处理
+│ └── cache.py # 数据缓存管理
+├── model/
+│ ├── transformer.py # PyTorch Transformer 网络结构定义
+│ ├── trainer.py # 训练循环、EMA/SWA 逻辑、TopK 集成逻辑
+│ └── predictor.py # 模型推理封装
+├── backtest/
+│ ├── engine.py # 回测引擎（处理滑点、手续费、订单撮合）
+│ ├── evaluator.py # 绩效评估（夏普、回撤、胜率等指标计算）
+│ └── optimizer.py # Optuna 超参/策略参数多目标寻优
+├── strategies/
+│ └── compound_signal.py # 复合信号策略（结合模型预测得分与技术指标阈值）
+├── live/
+│ ├── advisor.py # 实盘建议主逻辑（整合预测、信号、风控）
+│ ├── signal_filter.py # 信号过滤（例如剔除 ST 股、停牌股、涨跌停股）
+│ └── portfolio_risk.py # 持仓组合层面的实时风控计算
+├── utils/
+│ └── logger.py # 全局日志配置
+├── my_portfolio.json # 【需手动创建】你的真实持仓 JSON 结构
+├── .env.example # 环境变量模板 (已忽略真实 .env)
+└── .gitignore # 忽略大文件、权重、IDE配置等
 
 
-输出文件：`stock_predictions.json`
+---
 
-### 第五步：实盘决策
+## 🛠️ 开发者与审查者须知
 
-bash
+在对此代码进行二次开发或 LLM Review 时，请重点关注以下已知的技术债和优化点：
 
-首次运行会自动生成 my_portfolio.json 模板
-填入你的实际持仓信息后运行：
-方式A：标准运行
-python run_advisor.py
+### 1. 配置注入缺陷
+* **问题**：`config.py` 中的 `SlippageConfig.from_env()` 原先存在字段映射错误（将 `buy_slippage_rate` 映射到了 `COMMISSION_RATE`，将 `sell_slippage_rate` 的默认值设为了 `0.9985`，这在语义上是极其混乱的）。
+* **改进**：代码审查时需确保 `.env` 中的变量名与 `os.getenv()` 的 key 绝对一致，且所有比率默认值应统一为小数形式（如 0.0015），而非 (1 - rate) 的形式。
 
-方式B：详细日志（调试用）
-python run_advisor.py -v
+### 2. 可复现性
+* **问题**：当前代码缺少全局随机种子设定。
+* **改进**：在 `run_train.py` 启动时，必须添加 `torch.manual_seed()`, `numpy.random.seed()`, 以及设置 `torch.backends.cudnn.deterministic = True`，否则 Optuna 寻优和模型训练的结果将无法复现。
 
-方式C：只检查环境不执行
-python run_advisor.py --dry-run
+### 3. 数据源鲁棒性
+* **问题**：`efinance`/`akshare` 接口不稳定，经常出现限流或字段变更。
+* **改进**：`data/loader.py` 需要增加指数退避重试机制，并且在 `indicators.py` 计算前，严格校验 OHLCV 数据的逻辑合法性（如 `High >= Low`，`Volume >= 0`）。
 
+### 4. 实盘 Advisor 的边界条件
+* **问题**：在 `run_advisor.py` 计算建议买入股数时，未充分考虑 A 股的“最少买入 100 股（1手）”规则以及资金不足时的向下取整逻辑。
+* **改进**：输出最终建议前，必须加入整手校验逻辑：`target_shares = int(available_cash * weight / price / 100) * 100`。
 
-输出示例：
-📢 当前市场环境: 【neutral】 (日期: 2026-03-31)
+---
 
---------------------【卖出监控】--------------------
-🚨 赛力斯 (601127)
-现价: 85.20 | 收益: 12.35%
-原因: 🛡️ 移动止损 (Level2)
+## 📄 开源协议
 
---------------------【买入机会】--------------------
-
-🟢 强信号 科大讯飞 (002230)
-现价: 52.80 | 综合得分: 0.85 (阈值: 0.60)
-AI观点: 0.72
-📊 建议仓位: 28.5% | 建议买入 5,400 股
-🟡 中信号 彩虹集团 (003023)
-现价: 18.50 | 综合得分: 0.72 (阈值: 0.60)
-AI观点: 0.65
-📊 建议仓位: 20.0% | 建议买入 10,800 股
-
-### 日常使用流程（简化版）
-
-如果你已经完成了数据下载、模型训练和回测优化，日常只需要两步：
-
-bash
-
-每天收盘后运行（15:30之后）
-python run_advisor.py
-
-
-如果需要更新模型预测（比如模型很久没跑、想看最新AI观点）：
-
-bash
-
-先预测评分
-python run_predict.py --pool --notify
-
-再看决策建议
-python run_advisor.py
-
-
-## 目录结构
-
-autotrade/
-├── .env # 🔧 集中配置（改参数只改这里）
-├── config.py # 配置加载逻辑
-├── exceptions.py # 6种自定义异常
-├── risk_manager.py # 双层风控管理器
-│
-├── data/ # 📊 数据层
-│ ├── init.py
-│ ├── types.py # 常量定义（FEATURES列名等）
-│ ├── loader.py # efinance/akshare 数据下载
-│ ├── normalize.py # 列名映射、OHLCV校验
-│ ├── cache.py # 缓存管理（原子写入）
-│ └── indicators.py # 技术指标计算（唯一来源）
-│
-├── strategies/ # 📈 策略层
-│ ├── init.py
-│ ├── base.py # BaseStrategy 抽象基类
-│ ├── compound_signal.py # 复合信号策略
-│ └── loader.py # 策略动态加载器
-│
-├── model/ # 🧠 深度学习模型层
-│ ├── init.py
-│ ├── transformer.py # StockTransformer 模型定义
-│ ├── trainer.py # 训练循环（EMA/SWA/Scheduler）
-│ ├── predictor.py # 集成推理+因子序列计算
-│ └── stock_pool.json # 股票池配置
-│
-├── backtest/ # 🔬 回测引擎层
-│ ├── init.py
-│ ├── engine.py # 回测主循环
-│ ├── optimizer.py # Optuna参数优化
-│ ├── evaluator.py # 9项统计指标
-│ └── visualizer.py # 可视化图表
-│
-├── live/ # 💰 实盘决策层
-│ ├── init.py
-│ ├── advisor.py # 决策辅助主逻辑
-│ ├── signal_filter.py # 信号置信度分级
-│ └── portfolio_risk.py # 组合层面风控
-│
-├── run_data_download.py # 🚀 入口：数据下载
-├── run_train.py # 🚀 入口：模型训练
-├── run_backtest.py # 🚀 入口：回测优化
-├── run_predict.py # 🚀 入口：集成预测
-├── run_advisor.py # 🚀 入口：实盘决策
-│
-├── model_weights.pth # 模型权重（EMA）
-├── swa_model_weights.pth # 模型权重（SWA）
-├── per_stock_scalers.pkl # 股票独立scaler
-├── global_scaler.pkl # 全局scaler
-├── checkpoints/ # TopK集成模型
-├── stock_data_cleaned.feather # 训练数据
-├── optimized_strategies.json # 回测输出的策略参数
-├── my_portfolio.json # 持仓信息
-└── stock_predictions.json # 预测结果
-
-
-## 风控体系说明
-
-### 硬限制（回测前阻断）
-
-在 `risk_manager.py` 的 `check_hard_limits()` 中实现，违反直接抛异常：
-
-| 检查项 | 规则 | 目的 |
-|--------|------|------|
-| 止损宽度 | stop_loss < -15% | 防止参数过于宽松 |
-| 买入阈值 | buy_threshold < 0.4 | 防止过度交易 |
-| 阈值关系 | buy > sell | 逻辑一致性 |
-| 移动止损 | 利润/回撤参数为正且递增 | 参数合理性 |
-
-### 软目标（回测后评估）
-
-在 `risk_manager.py` 的 `evaluate_soft_targets()` 中实现，不达标标记为 `discard`：
-
-| 指标 | 默认阈值 | 未通过后果 |
-|------|---------|-----------|
-| 最大回撤 | > 20% | **丢弃**（核心指标） |
-| 利润因子 | < 1.5 | **丢弃**（核心指标） |
-| 夏普比率 | < 0.5 | 警告 |
-| 胜率 | < 40% | 警告 |
-| 交易次数 | < 15 或 > 120 | 警告 |
-
-### 组合风控（实盘前过滤）
-
-在 `live/portfolio_risk.py` 中实现：
-
-| 检查项 | 规则 |
-|--------|------|
-| 总仓位 | 不超过 80% |
-| 单只仓位 | 不超过 30% |
-| 板块集中度 | 同板块不超过 40% |
-
-## 常见问题
-
-### Q: 改了 LOOKBACK_DAYS 需要重新训练吗？
-**需要。** `LOOKBACK_DAYS` 是模型输入维度，改了之后旧权重无法加载。其他超参（学习率、dropout等）改了不需要重新训练，只需重新跑回测优化参数即可。
-
-### Q: 只想用回测+实盘，不想训练模型？
-把旧模型文件放到根目录，直接从第三步开始：
-bash
-python run_backtest.py
-python run_advisor.py
-
-
-### Q: 回测太慢怎么优化？
-1. 减少 Optuna 试验次数：`.env` 中 `N_OPTUNA_TRIALS=50`
-2. 减少 Walk-Forward 折数：`.env` 中 `N_SPLITS=3`
-3. 关掉 Transformer 因子：删除 `model_weights.pth`，系统会自动 fallback 到 0.5
-
-### Q: 实盘决策和回测结果不一致怎么办？
-检查以下几点：
-1. `my_portfolio.json` 中的 `buy_price` 和 `buy_date` 是否正确
-2. `optimized_strategies.json` 是否是最新的回测结果
-3. 大盘数据缓存是否过期（删除 `stock_cache/market_data.pkl` 重新下载）
-
-### Q: 如何添加新股票？
-编辑 `config.py` 中的 `STOCK_CODES` 字典，或者在 `model/stock_pool.json` 的 `default_pool` 中添加。然后重新运行回测和预测。
-
-### Q: 如何添加新因子？
-1. 在 `data/types.py` 的 `TRADITIONAL_FACTOR_COLS` 中添加列名
-2. 在 `data/indicators.py` 的 `calculate_orthogonal_factors()` 中计算该因子
-3. 回测和实盘会自动识别新因子（因为因子列是动态检测的）
-
-### Q: 企业微信通知怎么配？
-在 `.env` 中填入你的 Webhook URL：
-WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=你的key
-WECHAT_UPLOAD_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=你的key
-
-然后运行时加 `--notify` 参数。
+MIT License
