@@ -202,7 +202,7 @@ def process_single_stock(args):
         full_stats = calculate_comprehensive_stats(
             trades_df=combined_trades,
             equity_curve=equity_curve,
-            benchmark_returns=benchmark_returns,
+            benchmark_curve=benchmark_returns,  # ← 改成 benchmark_curve
             initial_cash=100000.0,
             commissions=total_commissions,
         )
