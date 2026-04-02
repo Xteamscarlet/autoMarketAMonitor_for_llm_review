@@ -63,39 +63,86 @@ ta-lib 如果 pip 安装失败，参考：https://github.com/ta-lib/ta-lib-pytho
 
 ```bash```
 
-env
+# ==================== 环境变量配置 ====================
+# 代理设置
+HTTP_PROXY=http://127.0.0.1:6789
+HTTPS_PROXY=http://127.0.0.1:6789
 
-=== 模型与训练配置 ===
-LEARNING_RATE=0.0001
-BATCH_SIZE=64
-EPOCHS=50
-NUM_CLASSES=4
-DROPOUT=0.1
+# ==================== 模型配置 ====================
+LOOKBACK_DAYS=120
+BATCH_SIZE=256
+EPOCHS=7
+LEARNING_RATE=3e-5
+WEIGHT_DECAY=0.05
+NUM_HEADS=8
+NUM_LAYERS=4
+DIM_FEEDFORWARD=512
+DROPOUT=0.4
+
+# ==================== 风控配置 ====================
+MAX_DRAWDOWN_LIMIT=-20.0
+MIN_PROFIT_FACTOR=1.5
+MAX_POSITION_RATIO=0.3
+MIN_SHARPE_RATIO=0.5
+MIN_WIN_RATE=40.0
+MIN_TRADES=15
+MAX_TRADES=120
+
+# ==================== 回测配置 ====================
+TRAIN_RATIO=0.7
+TEST_RATIO=0.3
+N_SPLITS=3
+GAP_DAYS=20
+N_OPTUNA_TRIALS=50
+INITIAL_CAPITAL=100000
+
+# ==================== 缓存配置 ====================
+CACHE_DIR=./stock_cache
+RESULT_DIR=./stock_cache/optimized_strategy_results
+MARKET_CACHE_FILE=./stock_cache/market_data.pkl
+STOCK_CACHE_FILE=./stock_cache/stocks_data.pkl
+
+# ==================== 路径配置 ====================
+MODEL_PATH=model_weights.pth
+SWA_MODEL_PATH=swa_model_weights.pth
+SCALER_PATH=per_stock_scalers.pkl
+GLOBAL_SCALER_PATH=global_scaler.pkl
+STRATEGY_FILE=optimized_strategies.json
+PORTFOLIO_FILE=my_portfolio.json
+TOPK_CHECKPOINT_DIR=checkpoints
+STOCK_POOL_FILE=model/stock_pool.json
+STOCK_DATA_FILE=stock_data_cleaned.feather
+
+# ==================== 企业微信配置 ====================
+WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your- key
+WECHAT_UPLOAD_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=your- key
+
+# ==================== 训练高级配置 ====================
+ACCUMULATION_STEPS=4
+EMA_DECAY=0.999
+WARMUP_EPOCHS=3
+PLATEAU_PATIENCE=2
+PLATEAU_FACTOR=0.5
+CYCLE_AMPLITUDE=0.2
+CYCLE_LENGTH=5
+TOPK_SAVE_COUNT=3
+GRAD_CLIP_NORM=0.3
 LABEL_SMOOTHING=0.1
+TIME_DECAY_RATE=0.001
 
-=== 交易成本与滑点 (注意: 这里显式区分) ===
-COMMISSION_RATE=0.0003
+# ---- 交易成本 & 滑点 ----
+COMMISSION_RATE=0.00025
 MIN_COMMISSION=5.0
-STAMP_DUTY_RATE=0.001
-TRANSFER_FEE_RATE=0.00002
-
-修正：直接使用明确的滑点率，而不是复用其他字段
+STAMP_DUTY_RATE=0.0005
+TRANSFER_FEE_RATE=0.00001
 BUY_SLIPPAGE_RATE=0.0015
-SELL_SLIPPAGE_RATE=0.0015
+SELL_SLIPPAGE_RATE=0.9985
 
-=== 风控配置 ===
-MAX_SINGLE_STOCK_WEIGHT=0.25
-MAX_INDUSTRY_WEIGHT=0.40
+# 调仓频率配置（weekly / biweekly）
+REBALANCE_FREQ=weekly
 
-=== 回测与优化配置 ===
-WALK_FORWARD_TRAIN_YEARS=3
-WALK_FORWARD_TEST_MONTHS=6
-WALK_FORWARD_GAP_DAYS=20
-OPTUNA_TRIALS=150
-
-=== 实盘通知 (选填) ===
-WECHAT_WEBHOOK=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
-
+# 调仓锚点星期几（0=周一 ... 6=周日）
+REBALANCE_ANCHOR_WEEKDAY=0
 
 ### 3. 标准执行流程
 
