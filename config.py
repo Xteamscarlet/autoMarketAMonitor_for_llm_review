@@ -205,8 +205,8 @@ class SlippageConfig:
     @classmethod
     def from_env(cls) -> "SlippageConfig":
         return cls(
-            buy_slippage_rate=_env_float("COMMISSION_RATE", 0.0015),
-            sell_slippage_rate=_env_float("MIN_COMMISSION", 0.9985)
+            buy_slippage_rate=_env_float("BUY_SLIPPAGE_RATE", 0.0015),
+            sell_slippage_rate=_env_float("SELL_SLIPPAGE_RATE", 0.0015)
         )
 from enum import Enum
 

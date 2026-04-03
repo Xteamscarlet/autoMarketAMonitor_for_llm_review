@@ -214,7 +214,7 @@ def run_backtest_loop(
             except (ValueError, ZeroDivisionError):
                 continue
 
-            buy_price_raw = price * buy_slippage_rate
+            buy_price_raw = price * (1 + buy_slippage_rate)
             buy_commission = calculate_transaction_cost(buy_price_raw, shares, 'buy', stock_code)
             actual_buy_cost = buy_price_raw * shares + buy_commission
             buy_date = date
@@ -270,7 +270,7 @@ def run_backtest_loop(
                 if price <= df['limit_down'].iloc[i]:
                     continue
 
-                sell_price_raw = price * sell_slippage_rate
+                sell_price_raw = price * (1 - sell_slippage_rate)
                 sell_commission_total = calculate_transaction_cost(sell_price_raw, shares, 'sell', stock_code)
                 actual_sell_proceeds = sell_price_raw * shares - sell_commission_total
                 net_ret = (actual_sell_proceeds - actual_buy_cost) / actual_buy_cost
