@@ -1,0 +1,1461 @@
+E:\autotrade\autotrade_for_llm_review>python run_backtest_no_transformer.py
+================================================================================
+增强版策略回测系统 V3 (无Transformer版本)
+================================================================================
+
+[1/3] 检查大盘数据...
+
+[2/3] 检查个股数据...
+下载股票数据...
+下载失败: ['比亚迪', '中信证券', '长江电力']
+stocks_data 类型: <class 'dict'>
+stocks_data 长度: 17
+stocks_data 键示例: ['贵州茅台', '美的集团', '国轩高科']
+
+数据验证:
+ 类型: <class 'dict'>
+ 长度: 17
+ 前3个键: ['贵州茅台', '美的集团', '国轩高科']
+
+✓ 缓存已保存到: ./stock_cache/no_transformer_stocks_data.pkl
+
+过滤股票...
+过滤后股票数: 20
+警告: 股票 比亚迪 (002594) 在列表中但缺少数据
+警告: 股票 中信证券 (600030) 在列表中但缺少数据
+警告: 股票 长江电力 (600900) 在列表中但缺少数据
+
+匹配结果:
+ 过滤后股票数: 20
+ 成功匹配数: 17
+ 最终有效股票数: 17
+
+[3/3] 开始回测 17 只股票...
+  0%|                                                                                           | 0/17 [00:00<?, ?it/s]
+数据总长度: 2383
+训练集长度: 1668 (70.0%)
+验证集长度: 357 (15.0%)
+测试集长度: 357 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:1668] (1668 天)
+  验证集: [1688:2045] (357 天)
+  测试集: [2065:2383] (318 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+数据总长度: 2595
+训练集长度: 1816 (70.0%)
+验证集长度: 389 (15.0%)
+测试集长度: 389 (15.0%)
+
+数据总长度: 3218间隔天数: 20
+
+第 1 次划分:
+训练集长度: 2252 (70.0%)
+  训练集: [0:1816] (1816 天)
+验证集长度: 482 (15.0%)
+  验证集: [1836:2225] (389 天)
+测试集长度: 482 (15.0%)
+  测试集: [2245:2595] (350 天)
+间隔天数: 20
+
+第 2 次划分：测试集超出数据范围，停止划分第 1 次划分:
+
+  训练集: [0:2252] (2252 天)
+
+总共生成 1 次有效划分  验证集: [2272:2754] (482 天)
+
+  测试集: [2774:3218] (444 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+数据总长度: 4497
+训练集长度: 3147 (70.0%)
+验证集长度: 674 (15.0%)
+测试集长度: 674 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:3147] (3147 天)
+  验证集: [3167:3841] (674 天)
+  测试集: [3861:4497] (636 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+  6%|████▉                                                                              | 1/17 [00:35<09:28, 35.51s/it]
+数据总长度: 2356
+训练集长度: 1649 (70.0%)
+验证集长度: 353 (15.0%)
+测试集长度: 353 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:1649] (1649 天)
+  验证集: [1669:2022] (353 天)
+  测试集: [2042:2356] (314 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_000333
+symbol:           000333
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  37.8
+Start                     2023-02-16 00:00:00+00:00
+End                       2024-09-19 00:00:00+00:00
+Duration                           581 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -499126.21
+Equity Peak [$]                        156.31
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -4200.0000
+Volatility (Ann.) [%]                     0.1230
+CAGR [%]                                 -4200.0000
+Sharpe Ratio                               -204634.0056
+Sortino Ratio                              -204634.0056
+Calmar Ratio                              -42.0000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9705
+Max. Drawdown Duration             5 days 00:00:00
+Avg. Drawdown Duration              5 days 00:00:00
+# Trades                                          6
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8437
+Worst Trade [%]                           -99.8627
+Avg. Trade [%]                             -99.8544
+Max. Trade Duration                32 days 00:00:00
+Avg. Trade Duration                 24 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8544
+SQN                                        -31575.7126
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-204634.01) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] ✗ total_trades(6) < 15
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 美的集团 - 核心风控指标未通过，策略丢弃
+ 12%|█████████▊                                                                         | 2/17 [00:37<03:59, 15.96s/it]
+数据总长度: 4242
+训练集长度: 2969 (70.0%)
+验证集长度: 636 (15.0%)
+测试集长度: 636 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2969] (2969 天)
+  验证集: [2989:3625] (636 天)
+  测试集: [3645:4242] (597 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_601012
+symbol:           601012
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  47.4
+Start                     2022-05-12 00:00:00+00:00
+End                       2024-05-07 00:00:00+00:00
+Duration                           726 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1597553.02
+Equity Peak [$]                        144.95
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1482.3529
+Volatility (Ann.) [%]                     0.2985
+CAGR [%]                                 -1482.3529
+Sharpe Ratio                               -84288.9815
+Sortino Ratio                              -84288.9815
+Calmar Ratio                              -14.8235
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9883
+Max. Drawdown Duration             16 days 00:00:00
+Avg. Drawdown Duration              16 days 00:00:00
+# Trades                                          17
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8138
+Worst Trade [%]                           -99.8793
+Avg. Trade [%]                             -99.8561
+Max. Trade Duration                29 days 00:00:00
+Avg. Trade Duration                 24 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8561
+SQN                                        -21892.4817
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-84288.98) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 隆基绿能 - 核心风控指标未通过，策略丢弃
+
+数据总长度: 3128
+训练集长度: 2189 (70.0%)
+验证集长度: 469 (15.0%)
+测试集长度: 469 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2189] (2189 天)
+  验证集: [2209:2678] (469 天)
+  测试集: [2698:3128] (430 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002074
+symbol:           002074
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  67.1
+Start                     2020-10-12 00:00:00+00:00
+End                       2023-07-18 00:00:00+00:00
+Duration                           1009 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2595987.22
+Equity Peak [$]                        133.52
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -933.3333
+Volatility (Ann.) [%]                     0.2571
+CAGR [%]                                 -933.3333
+Sharpe Ratio                               -97869.0837
+Sortino Ratio                              -97869.0837
+Calmar Ratio                              -9.3333
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9950
+Max. Drawdown Duration             26 days 00:00:00
+Avg. Drawdown Duration              26 days 00:00:00
+# Trades                                          27
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8182
+Worst Trade [%]                           -99.8770
+Avg. Trade [%]                             -99.8514
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 24 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8514
+SQN                                        -32035.1775
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-97869.08) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 国轩高科 - 核心风控指标未通过，策略丢弃
+ 18%|██████████████▋                                                                    | 3/17 [01:07<05:08, 22.06s/it]
+数据总长度: 3968
+训练集长度: 2777 (70.0%)
+验证集长度: 595 (15.0%)
+测试集长度: 595 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2777] (2777 天)
+  验证集: [2797:3392] (595 天)
+  测试集: [3412:3968] (556 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_601127
+symbol:           601127
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  33.8
+Start                     2023-06-02 00:00:00+00:00
+End                       2024-11-15 00:00:00+00:00
+Duration                           532 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -598991.70
+Equity Peak [$]                        146.57
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -3600.0000
+Volatility (Ann.) [%]                     0.2711
+CAGR [%]                                 -3600.0000
+Sharpe Ratio                               -92809.2414
+Sortino Ratio                              -92809.2414
+Calmar Ratio                              -36.0000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9764
+Max. Drawdown Duration             6 days 00:00:00
+Avg. Drawdown Duration              6 days 00:00:00
+# Trades                                          7
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8309
+Worst Trade [%]                           -99.8814
+Avg. Trade [%]                             -99.8560
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 25 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8560
+SQN                                        -15468.2069
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-92809.24) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] ✗ total_trades(7) < 15
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 赛力斯 - 核心风控指标未通过，策略丢弃
+ 29%|████████████████████████▍                                                          | 5/17 [01:09<02:02, 10.18s/it]
+数据总长度: 4676
+训练集长度: 3273 (70.0%)
+验证集长度: 701 (15.0%)
+测试集长度: 701 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:3273] (3273 天)
+  验证集: [3293:3994] (701 天)
+  测试集: [4014:4676] (662 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002415
+symbol:           002415
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  46.2
+Start                     2022-06-21 00:00:00+00:00
+End                       2024-05-27 00:00:00+00:00
+Duration                           706 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1397789.73
+Equity Peak [$]                        175.77
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1680.0000
+Volatility (Ann.) [%]                     0.1851
+CAGR [%]                                 -1680.0000
+Sharpe Ratio                               -135969.5193
+Sortino Ratio                              -135969.5193
+Calmar Ratio                              -16.8000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9910
+Max. Drawdown Duration             14 days 00:00:00
+Avg. Drawdown Duration              14 days 00:00:00
+# Trades                                          15
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8242
+Worst Trade [%]                           -99.8746
+Avg. Trade [%]                             -99.8526
+Max. Trade Duration                29 days 00:00:00
+Avg. Trade Duration                 19 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8526
+SQN                                        -33173.1659
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-135969.52) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 海康威视 - 核心风控指标未通过，策略丢弃
+
+数据总长度: 4624
+训练集长度: 3236 (70.0%)
+验证集长度: 693 (15.0%)
+测试集长度: 693 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:3236] (3236 天)
+  验证集: [3256:3949] (693 天)
+  测试集: [3969:4624] (655 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002230
+symbol:           002230
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  63.7
+Start                     2021-01-28 00:00:00+00:00
+End                       2023-09-11 00:00:00+00:00
+Duration                           956 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1697350.94
+Equity Peak [$]                        157.78
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1400.0000
+Volatility (Ann.) [%]                     0.2560
+CAGR [%]                                 -1400.0000
+Sharpe Ratio                               -98289.3669
+Sortino Ratio                              -98289.3669
+Calmar Ratio                              -14.0000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9904
+Max. Drawdown Duration             17 days 00:00:00
+Avg. Drawdown Duration              17 days 00:00:00
+# Trades                                          18
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8240
+Worst Trade [%]                           -99.8802
+Avg. Trade [%]                             -99.8528
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 24 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8528
+SQN                                        -26268.9383
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-98289.37) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 科大讯飞 - 核心风控指标未通过，策略丢弃
+ 35%|█████████████████████████████▎                                                     | 6/17 [01:41<03:01, 16.52s/it]
+数据总长度: 4295
+训练集长度: 3006 (70.0%)
+验证集长度: 644 (15.0%)
+测试集长度: 644 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:3006] (3006 天)
+  验证集: [3026:3670] (644 天)
+  测试集: [3690:4295] (605 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002281
+symbol:           002281
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  56.9
+Start                     2021-06-04 00:00:00+00:00
+End                       2023-11-15 00:00:00+00:00
+Duration                           894 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2296366.31
+Equity Peak [$]                        119.39
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1050.0000
+Volatility (Ann.) [%]                     0.3909
+CAGR [%]                                 -1050.0000
+Sharpe Ratio                               -64361.0034
+Sortino Ratio                              -64361.0034
+Calmar Ratio                              -10.5000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9942
+Max. Drawdown Duration             23 days 00:00:00
+Avg. Drawdown Duration              23 days 00:00:00
+# Trades                                          24
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8007
+Worst Trade [%]                           -99.8812
+Avg. Trade [%]                             -99.8486
+Max. Trade Duration                36 days 00:00:00
+Avg. Trade Duration                 21 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8486
+SQN                                        -19862.2369
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-64361.00) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 光迅科技 - 核心风控指标未通过，策略丢弃
+ 47%|███████████████████████████████████████                                            | 8/17 [02:04<02:07, 14.16s/it]
+数据总长度: 6484
+训练集长度: 4538 (70.0%)
+验证集长度: 972 (15.0%)
+测试集长度: 972 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:4538] (4538 天)
+  验证集: [4558:5530] (972 天)
+  测试集: [5550:6484] (934 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_600276
+symbol:           600276
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  68.9
+Start                     2020-07-21 00:00:00+00:00
+End                       2023-06-08 00:00:00+00:00
+Duration                           1052 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2496254.49
+Equity Peak [$]                        137.08
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -969.2308
+Volatility (Ann.) [%]                     0.1628
+CAGR [%]                                 -969.2308
+Sharpe Ratio                               -154605.1062
+Sortino Ratio                              -154605.1062
+Calmar Ratio                              -9.6923
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9940
+Max. Drawdown Duration             25 days 00:00:00
+Avg. Drawdown Duration              25 days 00:00:00
+# Trades                                          26
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8246
+Worst Trade [%]                           -99.8672
+Avg. Trade [%]                             -99.8559
+Max. Trade Duration                32 days 00:00:00
+Avg. Trade Duration                 19 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8559
+SQN                                        -49660.4027
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-154605.11) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 恒瑞医药 - 核心风控指标未通过，策略丢弃
+ 53%|███████████████████████████████████████████▉                                       | 9/17 [02:18<01:53, 14.14s/it]
+数据总长度: 3996
+训练集长度: 2797 (70.0%)
+验证集长度: 599 (15.0%)
+测试集长度: 599 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2797] (2797 天)
+  验证集: [2817:3416] (599 天)
+  测试集: [3436:3996] (560 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_600547
+symbol:           600547
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  65.5
+Start                     2020-08-10 00:00:00+00:00
+End                       2023-06-19 00:00:00+00:00
+Duration                           1043 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2596044.91
+Equity Peak [$]                        143.27
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -933.3333
+Volatility (Ann.) [%]                     0.2970
+CAGR [%]                                 -933.3333
+Sharpe Ratio                               -84721.2933
+Sortino Ratio                              -84721.2933
+Calmar Ratio                              -9.3333
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9952
+Max. Drawdown Duration             26 days 00:00:00
+Avg. Drawdown Duration              26 days 00:00:00
+# Trades                                          27
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8169
+Worst Trade [%]                           -99.8821
+Avg. Trade [%]                             -99.8535
+Max. Trade Duration                29 days 00:00:00
+Avg. Trade Duration                 22 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8535
+SQN                                        -27731.5528
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-84721.29) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 山东黄金 - 核心风控指标未通过，策略丢弃
+ 59%|████████████████████████████████████████████████▏                                 | 10/17 [02:39<01:51, 15.91s/it]
+数据总长度: 3670
+训练集长度: 2569 (70.0%)
+验证集长度: 550 (15.0%)
+测试集长度: 550 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2569] (2569 天)
+  验证集: [2589:3139] (550 天)
+  测试集: [3159:3670] (511 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_601899
+symbol:           601899
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  60.0
+Start                     2021-01-06 00:00:00+00:00
+End                       2023-08-30 00:00:00+00:00
+Duration                           966 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2296361.38
+Equity Peak [$]                        141.54
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1050.0000
+Volatility (Ann.) [%]                     0.2349
+CAGR [%]                                 -1050.0000
+Sharpe Ratio                               -107131.5120
+Sortino Ratio                              -107131.5120
+Calmar Ratio                              -10.5000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9930
+Max. Drawdown Duration             23 days 00:00:00
+Avg. Drawdown Duration              23 days 00:00:00
+# Trades                                          24
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8268
+Worst Trade [%]                           -99.8700
+Avg. Trade [%]                             -99.8484
+Max. Trade Duration                29 days 00:00:00
+Avg. Trade Duration                 24 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8484
+SQN                                        -33061.5024
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-107131.51) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 紫金矿业 - 核心风控指标未通过，策略丢弃
+ 65%|█████████████████████████████████████████████████████                             | 11/17 [02:41<01:13, 12.25s/it]
+数据总长度: 6233
+训练集长度: 4363 (70.0%)
+验证集长度: 934 (15.0%)
+测试集长度: 934 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:4363] (4363 天)
+  验证集: [4383:5317] (934 天)
+  测试集: [5337:6233] (896 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002241
+symbol:           002241
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  53.0
+Start                     2021-05-25 00:00:00+00:00
+End                       2023-11-09 00:00:00+00:00
+Duration                           898 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1597503.49
+Equity Peak [$]                        150.53
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1482.3529
+Volatility (Ann.) [%]                     0.2857
+CAGR [%]                                 -1482.3529
+Sharpe Ratio                               -88059.5839
+Sortino Ratio                              -88059.5839
+Calmar Ratio                              -14.8235
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9896
+Max. Drawdown Duration             16 days 00:00:00
+Avg. Drawdown Duration              16 days 00:00:00
+# Trades                                          17
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8236
+Worst Trade [%]                           -99.8788
+Avg. Trade [%]                             -99.8531
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 22 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8531
+SQN                                        -22871.8250
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-88059.58) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 歌尔股份 - 核心风控指标未通过，策略丢弃
+
+数据总长度: 4663
+训练集长度: 3264 (70.0%)
+验证集长度: 699 (15.0%)
+测试集长度: 699 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:3264] (3264 天)
+  验证集: [3284:3983] (699 天)
+  测试集: [4003:4663] (660 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_002384
+symbol:           002384
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  46.1
+Start                     2021-10-20 00:00:00+00:00
+End                       2024-01-18 00:00:00+00:00
+Duration                           820 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2196292.44
+Equity Peak [$]                        173.17
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1095.6522
+Volatility (Ann.) [%]                     0.3910
+CAGR [%]                                 -1095.6522
+Sharpe Ratio                               -64349.4149
+Sortino Ratio                              -64349.4149
+Calmar Ratio                              -10.9565
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9911
+Max. Drawdown Duration             22 days 00:00:00
+Avg. Drawdown Duration              22 days 00:00:00
+# Trades                                          23
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.7979
+Worst Trade [%]                           -99.8863
+Avg. Trade [%]                             -99.8388
+Max. Trade Duration                31 days 00:00:00
+Avg. Trade Duration                 23 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8388
+SQN                                        -19440.5367
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-64349.41) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 东山精密 - 核心风控指标未通过，策略丢弃
+
+数据总长度: 4020
+训练集长度: 2814 (70.0%)
+验证集长度: 603 (15.0%)
+测试集长度: 603 (15.0%)
+间隔天数: 20
+第 1 次划分:
+  训练集: [0:2814] (2814 天)
+  验证集: [2834:3437] (603 天)
+  测试集: [3457:4020] (563 天)
+
+第 2 次划分：测试集超出数据范围，停止划分
+
+总共生成 1 次有效划分
+
+strategy:         compound_signal_600875
+symbol:           600875
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  87.2
+Start                     2018-04-26 00:00:00+00:00
+End                       2022-04-26 00:00:00+00:00
+Duration                           1461 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -2895608.08
+Equity Peak [$]                        186.07
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -840.0000
+Volatility (Ann.) [%]                     0.2931
+CAGR [%]                                 -840.0000
+Sharpe Ratio                               -85862.7917
+Sortino Ratio                              -85862.7917
+Calmar Ratio                              -8.4000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9957
+Max. Drawdown Duration             29 days 00:00:00
+Avg. Drawdown Duration              29 days 00:00:00
+# Trades                                          30
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8023
+Worst Trade [%]                           -99.8811
+Avg. Trade [%]                             -99.8536
+Max. Trade Duration                33 days 00:00:00
+Avg. Trade Duration                 25 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8536
+SQN                                        -29625.4777
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-85862.79) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 东方电气 - 核心风控指标未通过，策略丢弃
+ 71%|█████████████████████████████████████████████████████████▉                        | 12/17 [03:31<01:53, 22.69s/it]
+strategy:         compound_signal_600760
+symbol:           600760
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  82.9
+Start                     2018-08-15 00:00:00+00:00
+End                       2022-06-23 00:00:00+00:00
+Duration                           1408 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -3195235.68
+Equity Peak [$]                        135.29
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -763.6364
+Volatility (Ann.) [%]                     0.2175
+CAGR [%]                                 -763.6364
+Sharpe Ratio                               -115715.1190
+Sortino Ratio                              -115715.1190
+Calmar Ratio                              -7.6364
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9957
+Max. Drawdown Duration             32 days 00:00:00
+Avg. Drawdown Duration              32 days 00:00:00
+# Trades                                          33
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8123
+Worst Trade [%]                           -99.8721
+Avg. Trade [%]                             -99.8556
+Max. Trade Duration                32 days 00:00:00
+Avg. Trade Duration                 18 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8556
+SQN                                        -41874.2273
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-115715.12) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 中航沈飞 - 核心风控指标未通过，策略丢弃
+ 88%|████████████████████████████████████████████████████████████████████████▎         | 15/17 [04:04<00:32, 16.36s/it]
+strategy:         compound_signal_600598
+symbol:           600598
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  61.0
+Start                     2020-07-27 00:00:00+00:00
+End                       2023-06-12 00:00:00+00:00
+Duration                           1050 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1697396.28
+Equity Peak [$]                        151.64
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1400.0000
+Volatility (Ann.) [%]                     0.2015
+CAGR [%]                                 -1400.0000
+Sharpe Ratio                               -124891.3463
+Sortino Ratio                              -124891.3463
+Calmar Ratio                              -14.0000
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9918
+Max. Drawdown Duration             17 days 00:00:00
+Avg. Drawdown Duration              17 days 00:00:00
+# Trades                                          18
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8324
+Worst Trade [%]                           -99.8794
+Avg. Trade [%]                             -99.8553
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 22 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8553
+SQN                                        -33378.6163
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-124891.35) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 北大荒 - 核心风控指标未通过，策略丢弃
+ 94%|█████████████████████████████████████████████████████████████████████████████▏    | 16/17 [04:12<00:14, 14.59s/it]
+strategy:         compound_signal_000786
+symbol:           000786
+timeframe:        daily
+max_leverage:     1.0
+elapsed_seconds:  50.6
+Start                     2021-05-14 00:00:00+00:00
+End                       2023-11-06 00:00:00+00:00
+Duration                           906 days 00:00:00
+Exposure Time [%]                         100.0000
+Equity Final [$]                       -1497641.98
+Equity Peak [$]                        149.90
+Commissions [$]                          0.00
+Return [%]                                -100.0000
+Buy & Hold Return [%]                      N/A
+Return (Ann.) [%]                         -1575.0000
+Volatility (Ann.) [%]                     0.1846
+CAGR [%]                                 -1575.0000
+Sharpe Ratio                               -136346.1142
+Sortino Ratio                              -136346.1142
+Calmar Ratio                              -15.7500
+Alpha [%]                                 N/A
+Beta                                      N/A
+Max. Drawdown [%]                         -100.0000
+Avg. Drawdown [%]                         -99.9892
+Max. Drawdown Duration             15 days 00:00:00
+Avg. Drawdown Duration              15 days 00:00:00
+# Trades                                          16
+Win Rate [%]                              0.0000
+Best Trade [%]                            -99.8298
+Worst Trade [%]                           -99.8705
+Avg. Trade [%]                             -99.8526
+Max. Trade Duration                28 days 00:00:00
+Avg. Trade Duration                 23 days 00:00:00
+Profit Factor                              0.0000
+Expectancy [%]                             -99.8526
+SQN                                        -34355.9915
+Kelly Criterion                            0.0000
+
+risk_passed: False | max_drawdown: -100.00% ✗ | profit_factor: 0.00 ✗
+[RISK] ✗ max_drawdown(-100.00%) < -20.00%
+[RISK] ✗ profit_factor(0.00) < 1.50
+[RISK] ✗ sharpe_ratio(-136346.11) < 0.50
+[RISK] ✗ win_rate(0.0%) < 40.0%
+[RISK] Strategy status = DISCARD (core limits failed)
+
+ [DISCARD] 北新建材 - 核心风控指标未通过，策略丢弃
+100%|██████████████████████████████████████████████████████████████████████████████████| 17/17 [04:15<00:00, 15.05s/it]
+
+================================================================================
+测试集汇总报告（无Transformer版本）
+================================================================================
+名称                  收益%      胜率%     交易       夏普      最大回撤%     利润因子
+--------------------------------------------------------------------------------
+
+================================================================================
+【组合回测】等权组合测试集总收益（无Transformer版本）
+================================================================================
+警告: 没有有效策略，无法计算组合收益
+
+✓ 策略参数已写入: ./stock_cache/no_transformer_results\optimized_strategies_no_transformer.json
+ 保留策略数: 0 / 总股票数: 17
+
+================================================================================
+开始生成可视化图表...
+================================================================================
+
+================================================================================
+所有可视化图表生成完成！目录: ./stock_cache/no_transformer_results\backtest_charts
+================================================================================
+
+E:\autotrade\autotrade_for_llm_review>\
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
