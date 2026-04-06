@@ -156,9 +156,13 @@ def run_backtest_loop_no_transformer(
     logger.info(f"[{stock_code}] 开始回测，数据长度: {len(df)}，因子数: {len(factor_cols)}")
 
     # ========== 1. 计算综合得分 ==========
+    # ========== 1. 计算综合得分 ==========
     df['score'] = 0.0
+
+    # 1.1 先筛出在 df.columns 中存在的因子（避免 Key 错误）
     valid_weights = {k: v for k, v in weights.items() if k in df.columns}
-    # --- 新增：过滤掉非数值因子，避免字符串列参与运算 ---
+
+    # 1.2 过滤掉非数值因子，避免字符串列参与运算
     numeric_factor_cols = []
     for col in valid_weights:
         if col not in df.columns:
@@ -172,28 +176,49 @@ def run_backtest_loop_no_transformer(
                 logger.warning(
                     f"[{stock_code}] 因子列 {col} 为非数值类型，无法转换为 float，已剔除"
                 )
-                # 可选：把该因子权重置为 0，避免影响权重归一化
+                # 把该因子权重置为 0，避免影响后续权重归一化
                 valid_weights[col] = 0.0
         else:
             numeric_factor_cols.append(col)
 
     weight_sum = sum(valid_weights.values())
+
+    # --- 修复：权重全为 0 时改用等权重回退，而不是直接终止回测 ---
     if weight_sum <= 0:
-        logger.warning(f"[{stock_code}] 所有权重为 0，回测终止")
+        # 使用 factor_cols 中的因子构造等权重
+        if len(factor_cols) == 0:
+            logger.warning(f"[{stock_code}] 无有效因子列，无法计算 score，跳过该股回测。")
+            return None, None, df
+
+        logger.warning(
+            f"[{stock_code}] 所有权重为 0（可能优化未返回有效权重），weight_sum:{weight_sum}"
+            f"改用等权重（因子数量：{len(factor_cols)}）继续回测。"
+        )
+        equal_weight = 1.0 / len(factor_cols)
+        valid_weights = {col: equal_weight for col in factor_cols}
+        numeric_factor_cols = [
+            col for col in factor_cols
+            if col in df.columns and df[col].dtype != object
+        ]
+
+    # 归一化权重（防止前面有非 0 但未完全归一化的情况）
+    weight_sum = sum(valid_weights.values())
+    if weight_sum == 0:
+        # 理论上不会走到这里（上面已经处理 factor_cols==0 的情况）
+        logger.error(f"[{stock_code}] 有效因子权重求和仍为 0，回测终止。")
         return None, None, df
 
+    # 计算 score = Σ(因子值 * 归一化权重)
     for col, w in valid_weights.items():
         # 只用数值列计算 score
         if col not in numeric_factor_cols:
             continue
         df['score'] += df[col] * (w / weight_sum)
-    if len(valid_weights) == 0:
-        logger.warning(f"[{stock_code}] 无有效权重，使用等权重")
-        valid_weights = {col: 1.0 / len(factor_cols) for col in factor_cols}
 
-    weight_sum = sum(valid_weights.values())
-    for col, w in valid_weights.items():
-        df['score'] += df[col] * (w / weight_sum)
+    # （可选）如果之前 valid_weights 为空且使用了等权重，可以在这里补一句日志
+    if weight_sum == 0 and len(factor_cols) > 0:
+        logger.info(f"[{stock_code}] 已使用等权重计算 score。")
+
 
     # ========== 2. 信号生成 ==========
     df['signal'] = 'hold'

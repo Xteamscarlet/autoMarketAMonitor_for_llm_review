@@ -158,14 +158,17 @@ def calculate_dynamic_weights(
 
 
 def optimize_portfolio(
-        df: pd.DataFrame,
-        factor_cols: List[str],
-        n_splits: int = 5,  # 确保默认值是 int
-        ic_window_range: Tuple[int, int] = (20, 120),
-        min_ic_window: int = 20  # 确保默认值是 int
+    df: pd.DataFrame,
+    factor_cols: List[str],
+    n_splits: int = 5,
+    ic_window_range: Tuple[int, int] = (20, 120),
+    min_ic_window: int = 20,
 ) -> Tuple[Dict[str, float], float]:
-    """组合优化"""
-
+    """
+    组合优化（增强版）：
+    - 当 calculate_dynamic_weights 返回空字典时，改为使用等权重，
+      避免 weights={} 导致引擎层出现“所有权重为 0，回测终止”。
+    """
     # 类型检查
     if not isinstance(n_splits, int):
         n_splits = int(n_splits)
@@ -178,15 +181,28 @@ def optimize_portfolio(
         df,
         factor_cols,
         ic_window_range=ic_window_range,
-        min_ic_window=min_ic_window
+        min_ic_window=min_ic_window,
     )
 
+    # --- 新增：权重为空时使用等权重兜底，避免返回 {} 导致上游无法回测 ---
     if len(weights) == 0:
-        return {}, -999.0
+        if len(factor_cols) == 0:
+            logger.warning("优化无法生成权重且 factor_cols 为空，返回空权重与 -999.0")
+            return {}, -999.0
 
-    logger.info(f"Walk-Forward划分完成: {n_splits} 个划分")
+        logger.info(
+            "动态权重计算结果为空，改用等权重作为兜底，避免“所有权重为 0，回测终止”。"
+        )
+        equal_weight = 1.0 / len(factor_cols)
+        weights = {col: equal_weight for col in factor_cols}
+        # 这里不再返回 -999.0，改用一个合法的占位值（例如 0.0），表示“使用了默认权重”
+        best_sharpe = 0.0
+    else:
+        # 正常情况：根据 walk-forward 结果输出信息
+        logger.info(f"Walk-Forward划分完成: {n_splits} 个划分")
+        best_sharpe = 0.0
 
-    return weights, 0.0
+    return weights, best_sharpe
 
 
 def walk_forward_split(
