@@ -12,7 +12,7 @@ from typing import Dict, Tuple, Optional, List, Any, Union
 import numpy as np
 import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, pearsonr
 import optuna
 from sklearn.model_selection import TimeSeriesSplit
 
@@ -25,184 +25,6 @@ logger = logging.getLogger(__name__)
 # 抑制 Optuna 日志
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-
-def calculate_ic_safe(
-        factor_values: Union[np.ndarray, pd.Series],
-        returns: Union[np.ndarray, pd.Series],
-        min_periods: int = 10
-) -> float:
-    """
-    安全计算 IC（信息系数）
-
-    修复：
-    1. 常量输入导致的 ConstantInputWarning
-    2. Series/ndarray 类型兼容
-    """
-    # 转换为 numpy 数组
-    if isinstance(factor_values, pd.Series):
-        factor_arr = factor_values.values
-    else:
-        factor_arr = np.asarray(factor_values)
-
-    if isinstance(returns, pd.Series):
-        returns_arr = returns.values
-    else:
-        returns_arr = np.asarray(returns)
-
-    # 检查数据长度
-    if len(factor_arr) < min_periods or len(returns_arr) < min_periods:
-        return 0.0
-
-    # 移除 NaN
-    mask = ~(np.isnan(factor_arr) | np.isnan(returns_arr))
-    factor_clean = factor_arr[mask]
-    returns_clean = returns_arr[mask]
-
-    if len(factor_clean) < min_periods:
-        return 0.0
-
-    # 检查是否为常量
-    if np.std(factor_clean) < 1e-10 or np.std(returns_clean) < 1e-10:
-        return 0.0
-
-    # 计算 Spearman 相关系数
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            corr, _ = spearmanr(factor_clean, returns_clean, nan_policy='omit')
-
-        if np.isnan(corr):
-            return 0.0
-        return float(corr)
-    except:
-        return 0.0
-
-
-def calculate_dynamic_weights(
-        df: pd.DataFrame,
-        factor_cols: List[str],
-        ic_window_range: Tuple[int, int] = (20, 120),
-        use_ewma: bool = True,
-        min_ic_window: int = 20,  # 确保默认值是 int
-        return_col: str = 'future_return_1d'
-) -> Dict[str, float]:
-    """计算动态因子权重"""
-
-    # 关键修复：类型检查和转换
-    if not isinstance(min_ic_window, int):
-        logger.warning(f"min_ic_window 参数类型错误: {type(min_ic_window)}")
-        min_ic_window = int(min_ic_window)
-
-    # 检查数据
-    if df is None or len(df) == 0:
-        logger.warning("数据为空，返回空权重")
-        return {}
-
-    # 过滤有效因子列
-    valid_factors = [
-        col for col in factor_cols
-        if col in df.columns and pd.api.types.is_numeric_dtype(df[col])
-    ]
-
-    if len(valid_factors) == 0:
-        logger.warning("无有效因子列，返回空权重")
-        # 关键修复：返回等权重而不是空字典
-        return {}
-
-    # 检查收益率列
-    if return_col not in df.columns:
-        logger.warning(f"收益率列 {return_col} 不存在")
-        return {}
-
-    # 计算 IC
-    returns = df[return_col]
-    ic_values = {}
-
-    for factor_col in valid_factors:
-        factor_values = df[factor_col]
-
-        # 窗口大小确保是 int
-        n = len(df)
-        window = int(max(min_ic_window, min(ic_window_range[1], n // 3)))
-
-        # 使用安全的 IC 计算
-        ic_value = calculate_ic_safe(factor_values, returns, min_periods=window)
-        ic_values[factor_col] = ic_value
-
-    # 如果所有 IC 都为 0，使用等权重
-    valid_ic = {k: v for k, v in ic_values.items() if abs(v) > 1e-6}
-
-    if len(valid_ic) == 0:
-        logger.warning("所有因子IC都接近0，使用等权重")
-        weight = 1.0 / len(valid_factors)
-        return {col: weight for col in valid_factors}
-
-    # 计算权重
-    ic_abs_sum = sum(abs(v) for v in valid_ic.values())
-
-    if ic_abs_sum < 1e-6:
-        weight = 1.0 / len(valid_factors)
-        return {col: weight for col in valid_factors}
-
-    weights = {}
-    for factor_col in valid_factors:
-        ic_val = valid_ic.get(factor_col, 0.0)
-        weights[factor_col] = ic_val / ic_abs_sum
-
-    # 归一化
-    weight_sum = sum(abs(w) for w in weights.values())
-    if weight_sum > 0:
-        weights = {k: v / weight_sum for k, v in weights.items()}
-
-    return weights
-
-
-def optimize_portfolio(
-    df: pd.DataFrame,
-    factor_cols: List[str],
-    n_splits: int = 5,
-    ic_window_range: Tuple[int, int] = (20, 120),
-    min_ic_window: int = 20,
-) -> Tuple[Dict[str, float], float]:
-    """
-    组合优化（增强版）：
-    - 当 calculate_dynamic_weights 返回空字典时，改为使用等权重，
-      避免 weights={} 导致引擎层出现“所有权重为 0，回测终止”。
-    """
-    # 类型检查
-    if not isinstance(n_splits, int):
-        n_splits = int(n_splits)
-
-    if not isinstance(min_ic_window, int):
-        min_ic_window = int(min_ic_window)
-
-    # 计算权重
-    weights = calculate_dynamic_weights(
-        df,
-        factor_cols,
-        ic_window_range=ic_window_range,
-        min_ic_window=min_ic_window,
-    )
-
-    # --- 新增：权重为空时使用等权重兜底，避免返回 {} 导致上游无法回测 ---
-    if len(weights) == 0:
-        if len(factor_cols) == 0:
-            logger.warning("优化无法生成权重且 factor_cols 为空，返回空权重与 -999.0")
-            return {}, -999.0
-
-        logger.info(
-            "动态权重计算结果为空，改用等权重作为兜底，避免“所有权重为 0，回测终止”。"
-        )
-        equal_weight = 1.0 / len(factor_cols)
-        weights = {col: equal_weight for col in factor_cols}
-        # 这里不再返回 -999.0，改用一个合法的占位值（例如 0.0），表示“使用了默认权重”
-        best_sharpe = 0.0
-    else:
-        # 正常情况：根据 walk-forward 结果输出信息
-        logger.info(f"Walk-Forward划分完成: {n_splits} 个划分")
-        best_sharpe = 0.0
-
-    return weights, best_sharpe
 
 
 def walk_forward_split(
@@ -488,3 +310,190 @@ def optimize_all_regimes(
         best_params_map[regime] = params
 
     return best_params_map, weights
+
+from typing import Dict, Tuple, Optional, List, Any, Union
+
+import numpy as np
+import pandas as pd
+from scipy.stats import spearmanr
+import optuna
+
+from data.types import NON_FACTOR_COLS, TRADITIONAL_FACTOR_COLS
+
+
+def calculate_ic_safe(
+    factor_values: Union[np.ndarray, pd.Series],
+    returns: Union[np.ndarray, pd.Series],
+    min_periods: int = 20,
+    method: str = "spearman",
+) -> float:
+    """安全计算 IC（Rank IC），避免空值/短序列"""
+    try:
+        fv = pd.Series(factor_values).copy()
+        ret = pd.Series(returns).copy()
+        fv = fv.astype(float)
+        ret = ret.astype(float)
+
+        # 去掉共同缺失
+        mask = fv.notna() & ret.notna()
+        fv = fv[mask]
+        ret = ret[mask]
+
+        if len(fv) < min_periods:
+            return 0.0
+
+        if method == "spearman":
+            corr, _ = spearmanr(fv, ret)
+        else:
+            corr, _ = pearsonr(fv, ret)
+
+        if np.isnan(corr):
+            return 0.0
+        return float(corr)
+    except:
+        return 0.0
+
+
+def calculate_dynamic_weights(
+    df: pd.DataFrame,
+    factor_cols: List[str],
+    ic_window_range: Tuple[int, int] = (20, 120),
+    use_ewma: bool = True,
+    min_ic_window: int = 20,  # 确保默认值是 int
+    return_col: str = "future_return_1d",
+) -> Dict[str, float]:
+    """
+    计算动态因子权重（增强版）：
+    - 修正：权重和为负数时回退为等权重
+    - 修正：无有效因子或空数据时回退为等权重
+    """
+    # 关键修复：类型检查和转换
+    if not isinstance(min_ic_window, int):
+        logger.warning(f"min_ic_window 参数类型错误: {type(min_ic_window)}")
+        min_ic_window = int(min_ic_window)
+
+    # 检查数据
+    if df is None or len(df) == 0:
+        logger.warning("数据为空，返回空权重")
+        return {}
+
+    # 过滤有效因子列
+    valid_factors = [
+        col
+        for col in factor_cols
+        if col in df.columns and pd.api.types.is_numeric_dtype(df[col])
+    ]
+
+    if len(valid_factors) == 0:
+        logger.warning("无有效因子列，返回空权重")
+        # 关键修复：返回等权重而不是空字典
+        return {}
+
+    # 检查收益率列
+    if return_col not in df.columns:
+        logger.warning(f"收益率列 {return_col} 不存在")
+        return {}
+
+    # 计算 IC
+    returns = df[return_col]
+    ic_values = {}
+
+    for factor_col in valid_factors:
+        factor_values = df[factor_col]
+
+        # 窗口大小确保是 int
+        n = len(df)
+        window = int(max(min_ic_window, min(ic_window_range[1], n // 3)))
+
+        # 使用安全的 IC 计算
+        ic_value = calculate_ic_safe(factor_values, returns, min_periods=window)
+        ic_values[factor_col] = ic_value
+
+    # 如果所有 IC 都为 0，使用等权重
+    valid_ic = {k: v for k, v in ic_values.items() if abs(v) > 1e-6}
+    if len(valid_ic) == 0:
+        logger.warning("所有因子IC都接近0，使用等权重")
+        weight = 1.0 / len(valid_factors)
+        return {col: weight for col in valid_factors}
+
+    # 计算权重
+    ic_abs_sum = sum(abs(v) for v in valid_ic.values())
+    if ic_abs_sum < 1e-6:
+        weight = 1.0 / len(valid_factors)
+        return {col: weight for col in valid_factors}
+
+    weights = {}
+    for factor_col in valid_factors:
+        ic_val = valid_ic.get(factor_col, 0.0)
+        weights[factor_col] = ic_val / ic_abs_sum
+
+    # 归一化
+    weight_sum = sum(abs(w) for w in weights.values())
+    if weight_sum > 0:
+        weights = {k: v / weight_sum for k, v in weights.items()}
+
+    # ===== 关键修复：权重和为负数时也回退为等权重，避免引擎层误判为“所有权重为 0” =====
+    weight_sum = sum(weights.values())
+    if weight_sum <= 0:
+        logger.warning("权重和 <= 0（可能包含负权重），回退为等权重")
+        weight = 1.0 / len(valid_factors)
+        return {col: weight for col in valid_factors}
+
+    return weights
+
+
+def optimize_portfolio(
+    df: pd.DataFrame,
+    factor_cols: List[str],
+    n_splits: int = 5,
+    ic_window_range: Tuple[int, int] = (20, 120),
+    min_ic_window: int = 20,
+) -> Tuple[Dict[str, float], float]:
+    """
+    组合优化（增强版）：
+    - 当 calculate_dynamic_weights 返回空字典时，改为使用等权重，避免 weights={} 导致引擎层出现“所有权重为 0，回测终止”。
+    - 优化：权重和为负数时也回退为等权重。
+    """
+    # 类型检查
+    if not isinstance(n_splits, int):
+        n_splits = int(n_splits)
+    if not isinstance(min_ic_window, int):
+        min_ic_window = int(min_ic_window)
+
+    # 计算权重
+    weights = calculate_dynamic_weights(
+        df,
+        factor_cols,
+        ic_window_range=ic_window_range,
+        min_ic_window=min_ic_window,
+    )
+
+    # --- 新增：权重为空时使用等权重兜底，避免返回 {} 导致上游无法回测 ---
+    if len(weights) == 0:
+        if len(factor_cols) == 0:
+            logger.warning("优化无法生成权重且 factor_cols 为空，返回空权重与 -999.0")
+            return {}, -999.0
+
+        logger.info(
+            "动态权重计算结果为空，改用等权重作为兜底，避免“所有权重为 0，回测终止”。"
+        )
+        equal_weight = 1.0 / len(factor_cols)
+        weights = {col: equal_weight for col in factor_cols}
+        # 这里不再返回 -999.0，改用一个合法的占位值（例如 0.0），表示“使用了默认权重”
+        best_sharpe = 0.0
+    else:
+        # ===== 新增：权重和为负数时回退为等权重 =====
+        weight_sum = sum(weights.values())
+        if weight_sum <= 0:
+            logger.warning(
+                "优化返回权重和 <= 0（可能包含负权重），回退为等权重兜底。"
+            )
+            equal_weight = 1.0 / len(factor_cols)
+            weights = {col: equal_weight for col in factor_cols}
+            best_sharpe = 0.0
+        else:
+            # 正常情况：根据 walk-forward 结果输出信息
+            logger.info(f"Walk-Forward划分完成: {n_splits} 个划分")
+            best_sharpe = 0.0
+
+    return weights, best_sharpe
