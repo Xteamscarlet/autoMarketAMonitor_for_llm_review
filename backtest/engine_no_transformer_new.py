@@ -158,7 +158,35 @@ def run_backtest_loop_no_transformer(
     # ========== 1. 计算综合得分 ==========
     df['score'] = 0.0
     valid_weights = {k: v for k, v in weights.items() if k in df.columns}
+    # --- 新增：过滤掉非数值因子，避免字符串列参与运算 ---
+    numeric_factor_cols = []
+    for col in valid_weights:
+        if col not in df.columns:
+            continue
+        # 如果是 object / string 类型，尝试转成 float，转不了就丢弃
+        if df[col].dtype == object:
+            try:
+                df[col] = pd.to_numeric(df[col], errors='raise')
+                numeric_factor_cols.append(col)
+            except Exception:
+                logger.warning(
+                    f"[{stock_code}] 因子列 {col} 为非数值类型，无法转换为 float，已剔除"
+                )
+                # 可选：把该因子权重置为 0，避免影响权重归一化
+                valid_weights[col] = 0.0
+        else:
+            numeric_factor_cols.append(col)
 
+    weight_sum = sum(valid_weights.values())
+    if weight_sum <= 0:
+        logger.warning(f"[{stock_code}] 所有权重为 0，回测终止")
+        return None, None, df
+
+    for col, w in valid_weights.items():
+        # 只用数值列计算 score
+        if col not in numeric_factor_cols:
+            continue
+        df['score'] += df[col] * (w / weight_sum)
     if len(valid_weights) == 0:
         logger.warning(f"[{stock_code}] 无有效权重，使用等权重")
         valid_weights = {col: 1.0 / len(factor_cols) for col in factor_cols}

@@ -76,7 +76,7 @@ def safe_sma(series, period):
         logger.warning("输入序列全为NaN")
         return pd.Series(np.nan, index=series.index)
 
-    result = safe_sma(series.values, timeperiod=period)
+    result = safe_sma(series.values,period=period)
     return pd.Series(result, index=series.index)
 
 
