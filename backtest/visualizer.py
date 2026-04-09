@@ -141,7 +141,7 @@ def visualize_backtest_with_split(
                            label='买入' if idx_t == trades_df.index[0] else "")
                 score = df.loc[buy_date, 'Combined_Score'] if 'Combined_Score' in df.columns else 0
                 regime = get_market_regime(market_data, buy_date) if market_data is not None else 'neutral'
-                regime_cn = {'strong': '强势', 'weak': '弱势', 'neutral': '震荡'}
+                regime_cn = {'strong_bull': '强多头', 'bull': '多头', 'weak': '弱势', 'bear': '空头', 'neutral': '震荡', 'strong': '强势'}
                 ax1.annotate(f'买入\n得分:{score:.2f}\n大盘:{regime_cn.get(regime, regime)}',
                            xy=(buy_date, buy_price), xytext=(15, 25), textcoords='offset points',
                            fontsize=9, bbox=dict(boxstyle='round,pad=0.4', facecolor='red', alpha=0.4),

@@ -20,6 +20,8 @@ logger = logging.getLogger(__name__)
 from config import CommissionConfig, SlippageConfig
 
 
+_commission_cache = None
+
 def calculate_transaction_cost(
     price: float,
     shares: int,
@@ -32,9 +34,12 @@ def calculate_transaction_cost(
 ) -> float:
     """
     计算交易成本（佣金 + 印花税 + 过户费）
-    未传入的费率参数使用 config.py 中的全局配置。
+    ★ 修复：缓存 CommissionConfig 避免循环内重复读取
     """
-    _commission_cfg = CommissionConfig.from_env()
+    global _commission_cache
+    if _commission_cache is None:
+        _commission_cache = CommissionConfig.from_env()
+    _commission_cfg = _commission_cache
 
     if commission_rate is None:
         commission_rate = _commission_cfg.commission_rate
@@ -161,6 +166,13 @@ def run_backtest_loop_no_transformer(
 
         # ========== 持仓时处理卖出逻辑 ==========
         if position > 0:
+            # ★ T+1 限制：买入当天不能卖出
+            if buy_date is not None and date <= buy_date:
+                # 更新 peak 但不执行卖出
+                if price > peak_price:
+                    peak_price = price
+                continue
+
             unrealized_profit = (price - buy_price_raw) / buy_price_raw
             drawdown_from_peak = (peak_price - price) / peak_price
 

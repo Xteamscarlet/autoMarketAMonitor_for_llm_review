@@ -57,7 +57,7 @@ def calculate_transaction_cost(
     Returns:
         总交易成本
     """
-    settings = get_settings()
+    settings = _get_settings()
     comm_cfg: CommissionConfig = settings.commission
 
     # 使用传入参数或配置默认值
@@ -509,7 +509,5 @@ def build_equity_curve(
         return pd.Series(initial_capital, index=date_index)
 
 
-# 新增：获取配置
-def get_settings():
-    from config import get_settings
-    return get_settings()
+# ★ 修复：删除递归 get_settings()，直接从 config 导入
+from config import get_settings as _get_settings

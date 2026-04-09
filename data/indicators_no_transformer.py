@@ -224,48 +224,10 @@ def calculate_orthogonal_factors_no_transformer(
 
 
 def get_market_regime(market_data: Optional[pd.DataFrame], current_date) -> str:
-    """市场状态判断：波动率+趋势双确认
-
-    Returns:
-        'strong' / 'weak' / 'neutral'
+    """市场状态判断 — 委托给增强版 regime 模块
+    
+    ★ 修复：从 3 状态 (strong/weak/neutral) 升级到 5 状态
+    (strong_bull/bull/neutral/weak/bear)，与 engine.py 一致
     """
-    if market_data is None or current_date not in market_data.index:
-        return 'neutral'
-
-    idx_loc = market_data.index.get_loc(current_date)
-    if isinstance(idx_loc, slice):
-        idx = idx_loc.start
-    else:
-        idx = idx_loc
-
-    if idx < 120:
-        return 'neutral'
-    # ====== 新增：自动补全市场数据缺失的指标列 ======
-    _df = market_data.copy()
-    if 'MA20' not in _df.columns:
-        if 'Close' in _df.columns:
-            _df['MA20'] = _df['Close'].rolling(window=20, min_periods=1).mean()
-        elif 'close' in _df.columns:
-            _df['MA20'] = _df['close'].rolling(window=20, min_periods=1).mean()
-        else:
-            raise KeyError(f"market_data 中既无 'Close' 也无 'close' 列，"
-                           f"现有列: {list(_df.columns)}，无法计算 MA20")
-    price = _df['Close'].iloc[idx]
-    ma20 = _df['MA20'].iloc[idx]
-    returns = _df['Close'].pct_change()
-    short_vol = returns.iloc[idx - 20:idx].std()
-    long_vol_baseline = returns.iloc[idx - 120:idx].std()
-
-    if pd.isna(short_vol) or pd.isna(long_vol_baseline) or long_vol_baseline == 0:
-        return 'neutral'
-
-    high_volatility = short_vol > long_vol_baseline * 1.5
-    uptrend = price > ma20
-    downtrend = price < ma20
-
-    if uptrend and short_vol < long_vol_baseline * 1.1:
-        return 'strong'
-    elif downtrend and high_volatility:
-        return 'weak'
-    else:
-        return 'neutral'
+    from data.regime import get_market_regime as _get_regime_enhanced
+    return _get_regime_enhanced(market_data, current_date)

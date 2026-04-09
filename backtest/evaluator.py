@@ -38,7 +38,7 @@ def calculate_comprehensive_stats(
     avg_return = net_returns.mean() * 100
     best_trade = net_returns.max() * 100
     worst_trade = net_returns.min() * 100
-    equity_final = initial_cash * (1 + net_returns.sum())  # 简化
+    equity_final = initial_cash * (1 + net_returns).prod()  # ★ 修复：用复合收益替代简单求和
     equity_peak = initial_cash * (1 + net_returns.cumsum().max())
 
     # ---- 交易时长（如果存在 buy_date/sell_date） ----
@@ -87,9 +87,19 @@ def calculate_comprehensive_stats(
 
     max_drawdown, avg_drawdown, max_dd_duration, avg_dd_duration = _drawdown_stats(net_returns)
 
-    # ---- 年化与波动率（用交易日近似：1年≈252天） ----
+    # ---- 年化与波动率 ----
+    # ★ 修复：基于交易持续天数计算年化，而非简单用 252/n_trades
+    total_days = 252  # 默认1年
+    if 'buy_date' in trades_df.columns and 'sell_date' in trades_df.columns:
+        try:
+            first_date = trades_df['buy_date'].min()
+            last_date = trades_df['sell_date'].max()
+            total_days = max((last_date - first_date).days, 1)
+        except Exception:
+            pass
+    years = total_days / 252.0
     ann_factor = 252
-    ann_return = total_return * (ann_factor / n_trades) if n_trades > 0 else 0.0
+    ann_return = ((1 + total_return / 100) ** (1 / years) - 1) * 100 if years > 0 and total_return > -100 else 0.0
     ann_vol = net_returns.std() * np.sqrt(ann_factor) * 100
 
     # 夏普 / Sortino / Calmar
