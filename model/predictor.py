@@ -104,6 +104,9 @@ def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     temp['BB_Upper'], temp['BB_Middle'], temp['BB_Lower'] = ta.BBANDS(temp['Close'], timeperiod=20, nbdevup=2, nbdevdn=2, matype=0)
     temp['OBV'] = ta.OBV(temp['Close'], temp['Volume'])
     temp['CCI'] = ta.CCI(temp['High'], temp['Low'], temp['Close'], timeperiod=20)
+    # ★ 新增收益率特征
+    for lag in [1, 3, 5, 10]:
+        temp[f'ret_{lag}'] = temp['Close'].pct_change(lag)
     temp.bfill(inplace=True)
     temp.dropna(inplace=True)
     return temp

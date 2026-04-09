@@ -4,12 +4,13 @@
 新增：5种市场状态枚举、板块映射
 """
 
-# Transformer模型使用的20个特征
+# Transformer模型使用的特征（V2 新增收益率特征）
 FEATURES = [
     'Open', 'High', 'Low', 'Close', 'Volume', 'Turnover Rate',
     'MA5', 'MA10', 'MA20',
     'MACD', 'K', 'D', 'J', 'RSI', 'ADX',
     'BB_Upper', 'BB_Middle', 'BB_Lower', 'OBV', 'CCI',
+    'ret_1', 'ret_3', 'ret_5', 'ret_10',  # ★ 新增收益率特征
 ]
 
 BASE_OHLCV_COLS = ['Open', 'High', 'Low', 'Close', 'Volume']

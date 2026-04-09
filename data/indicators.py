@@ -79,6 +79,10 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # CCI
     df['CCI'] = ta.CCI(df['High'], df['Low'], df['Close'], timeperiod=20)
 
+    # ★ 新增收益率特征
+    for lag in [1, 3, 5, 10]:
+        df[f'ret_{lag}'] = df['Close'].pct_change(lag)
+
     return df
 
 

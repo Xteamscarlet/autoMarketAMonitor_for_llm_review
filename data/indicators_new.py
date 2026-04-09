@@ -237,6 +237,10 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
         logger.error(f"CCI计算失败: {e}")
         df['CCI'] = np.nan
 
+    # ★ 新增收益率特征
+    for lag in [1, 3, 5, 10]:
+        df[f'ret_{lag}'] = df['Close'].pct_change(lag)
+
     return df
 
 
