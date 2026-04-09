@@ -270,8 +270,8 @@ def _process_single_stock(stock_code: str) -> tuple:
             'n_splits': len(splits),
         }
 
-        # main() 会通过 splits[-1][2] 取 test_start_idx，所以格式要兼容
-        validated_splits = [(0, test_start_idx, test_start_idx, len(df))]
+        # ★ 修复：构造6元组格式兼容 (train_start, train_end, val_start, val_end, test_start, test_end)
+        validated_splits = [(0, test_start_idx, test_start_idx, test_start_idx, test_start_idx, len(df))]
         # ===== 构造结束 =====
 
         return stock_code, strategy, stats, df, trades_df, validated_splits, metadata
@@ -480,7 +480,8 @@ def main():
                 if 0 < idx_from_meta < actual_len:
                     split_idx = idx_from_meta
             elif splits and len(splits) > 0:
-                test_start = splits[-1][2]
+                # ★ 修复：6元组中 test_start 是 [4]
+                test_start = splits[-1][4]
                 if 0 < test_start < actual_len:
                     split_idx = test_start
             split_idx = max(1, min(split_idx, actual_len - 1))

@@ -171,8 +171,10 @@ def process_single_stock_no_transformer(args):
         combined_trades = pd.concat(all_trades, ignore_index=True)
 
         # 构建资金曲线和基准 - 使用修改后的函数
+        # ★ 修复：6元组 (train_start, train_end, val_start, val_end, test_start, test_end)
+        # test 起止是 [4] 和 [5]，不是 [2] 和 [3]
         last_split = validated_splits[-1]
-        test_df_last = df.iloc[last_split[2]:last_split[3]]
+        test_df_last = df.iloc[last_split[4]:last_split[5]]
         equity_curve = _build_equity_curve(test_df_last, combined_trades)
         benchmark_returns = _build_benchmark_returns(_worker_market_data, test_df_last)
 
@@ -220,8 +222,9 @@ def process_single_stock_no_transformer(args):
             'weights': best_weights_list[-1] if best_weights_list else {},
             'stats': full_stats,
         }
+        # ★ 修复：6元组中 test_start 是 [4]
         metadata = {
-            'test_start_idx': last_split[2],
+            'test_start_idx': last_split[4],
             'n_splits': len(validated_splits),
         }
         print(f" [KEEP] {stock_name} - 策略通过所有检查")
@@ -501,7 +504,8 @@ def main():
                 if 0 < idx_from_meta < actual_len:
                     split_idx = idx_from_meta
             elif splits and len(splits) > 0:
-                test_start = splits[-1][2]
+                # ★ 修复：6元组中 test_start 是 [4]
+                test_start = splits[-1][4]
                 if 0 < test_start < actual_len:
                     split_idx = test_start
             split_idx = max(1, min(split_idx, actual_len - 1))
