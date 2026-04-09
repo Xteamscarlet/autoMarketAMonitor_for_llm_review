@@ -62,6 +62,11 @@ class ModelConfig:
     label_smoothing: float = 0.1
     time_decay_rate: float = 0.001
 
+    # 推理配置
+    mc_forward_train: int = 10     # 训练/实盘 MC Dropout 采样次数
+    mc_forward_backtest: int = 3   # 回测时降低采样次数加速
+    inference_batch_size: int = 64 # 批量推理 batch size
+
     @classmethod
     def from_env(cls) -> "ModelConfig":
         return cls(
@@ -85,6 +90,9 @@ class ModelConfig:
             grad_clip_norm=_env_float("GRAD_CLIP_NORM", 0.3),
             label_smoothing=_env_float("LABEL_SMOOTHING", 0.1),
             time_decay_rate=_env_float("TIME_DECAY_RATE", 0.001),
+            mc_forward_train=_env_int("MC_FORWARD_TRAIN", 10),
+            mc_forward_backtest=_env_int("MC_FORWARD_BACKTEST", 3),
+            inference_batch_size=_env_int("INFERENCE_BATCH_SIZE", 64),
         )
 
 
@@ -98,6 +106,9 @@ class RiskConfig:
     min_win_rate: float = 40.0
     min_trades: int = 15
     max_trades: int = 120
+    max_daily_loss_ratio: float = 0.03
+    max_correlation: float = 0.7      # 组合内持仓最大相关系数
+    max_sector_ratio: float = 0.40    # 板块集中度上限
 
     @classmethod
     def from_env(cls) -> "RiskConfig":
@@ -109,6 +120,9 @@ class RiskConfig:
             min_win_rate=_env_float("MIN_WIN_RATE", 40.0),
             min_trades=_env_int("MIN_TRADES", 15),
             max_trades=_env_int("MAX_TRADES", 120),
+            max_daily_loss_ratio=_env_float("MAX_DAILY_LOSS_RATIO", 0.03),
+            max_correlation=_env_float("MAX_CORRELATION", 0.7),
+            max_sector_ratio=_env_float("MAX_SECTOR_RATIO", 0.40),
         )
 
 
@@ -121,6 +135,7 @@ class BacktestConfig:
     gap_days: int = 20
     n_optuna_trials: int = 150
     initial_capital: float = 100000.0
+    expanding_window: bool = True   # 使用扩展窗口而非固定窗口
 
     @classmethod
     def from_env(cls) -> "BacktestConfig":
@@ -131,6 +146,7 @@ class BacktestConfig:
             gap_days=_env_int("GAP_DAYS", 20),
             n_optuna_trials=_env_int("N_OPTUNA_TRIALS", 150),
             initial_capital=_env_float("INITIAL_CAPITAL", 100000.0),
+            expanding_window=_env_bool("EXPANDING_WINDOW", True),
         )
 
 
@@ -173,22 +189,16 @@ class PathConfig:
             wechat_webhook=_env("WECHAT_WEBHOOK", ""),
             wechat_upload_url=_env("WECHAT_UPLOAD_URL", ""),
         )
-# 示意，不是完整文件，你按你现有结构补充
 
-from dataclasses import dataclass
-# ---- 交易成本 & 滑点 ----
-COMMISSION_RATE=0.00025
-MIN_COMMISSION=5.0
-STAMP_DUTY_RATE=0.0005
-TRANSFER_FEE_RATE=0.00001
-BUY_SLIPPAGE_RATE=0.0015
-SELL_SLIPPAGE_RATE=0.0015
+
 @dataclass
 class CommissionConfig:
-    commission_rate: float
-    min_commission: float
-    stamp_duty_rate: float
-    transfer_fee_rate: float
+    """交易佣金配置"""
+    commission_rate: float = 0.00025
+    min_commission: float = 5.0
+    stamp_duty_rate: float = 0.0005
+    transfer_fee_rate: float = 0.00001
+
     @classmethod
     def from_env(cls) -> "CommissionConfig":
         return cls(
@@ -198,25 +208,30 @@ class CommissionConfig:
             transfer_fee_rate=_env_float("TRANSFER_FEE_RATE", 0.00001),
         )
 
+
 @dataclass
 class SlippageConfig:
-    buy_slippage_rate: float
-    sell_slippage_rate: float
+    """滑点配置"""
+    buy_slippage_rate: float = 0.001
+    sell_slippage_rate: float = 0.001
+
     @classmethod
     def from_env(cls) -> "SlippageConfig":
         return cls(
-            buy_slippage_rate=_env_float("BUY_SLIPPAGE_RATE", 0.0015),
-            sell_slippage_rate=_env_float("SELL_SLIPPAGE_RATE", 0.0015)
+            buy_slippage_rate=_env_float("BUY_SLIPPAGE_RATE", 0.001),
+            sell_slippage_rate=_env_float("SELL_SLIPPAGE_RATE", 0.001),
         )
+
+
 from enum import Enum
 
 class RebalanceFreq(str, Enum):
-    WEEKLY = "weekly"      # 每周
-    BIWEEKLY = "biweekly"  # 每两周
+    WEEKLY = "weekly"
+    BIWEEKLY = "biweekly"
+
 
 def _env_rebalance_freq(key: str, default: str = "weekly") -> RebalanceFreq:
     val = _env(key, default).lower()
-    # 兼容中文写法（可选）
     mapping = {
         "weekly": RebalanceFreq.WEEKLY,
         "biweekly": RebalanceFreq.BIWEEKLY,
@@ -229,13 +244,13 @@ def _env_rebalance_freq(key: str, default: str = "weekly") -> RebalanceFreq:
     }
     return mapping.get(val, RebalanceFreq(default))
 
+
 @dataclass
 class SchedulerConfig:
     """调度与频率配置"""
     rebalance_freq: RebalanceFreq = RebalanceFreq.WEEKLY
-    rebalance_anchor_weekday: int = 0  # 0=周一；1=周二 ... 6=周日
-    # 可选：基准日（若希望双周以某个周一为锚点）
-    rebalance_anchor_date: str = ""     # 格式 YYYY-MM-DD；为空则自动用本周的 rebalance_anchor_weekday
+    rebalance_anchor_weekday: int = 0
+    rebalance_anchor_date: str = ""
 
     @classmethod
     def from_env(cls) -> "SchedulerConfig":
@@ -247,16 +262,38 @@ class SchedulerConfig:
 
 
 @dataclass
+class RegimeConfig:
+    """市场状态判断配置"""
+    ma_period: int = 20              # MA 周期
+    volatility_period: int = 60      # 波动率周期
+    high_vol_threshold: float = 1.5  # 高波动阈值（相对中位数倍数）
+    trend_strength_period: int = 20  # 趋势强度计算周期
+    weak_regime_buy_cap: float = 0.3 # 弱势市场中允许的买入仓位上限
+    bear_max_position: float = 0.15  # 熊市单只最大仓位
+
+    @classmethod
+    def from_env(cls) -> "RegimeConfig":
+        return cls(
+            ma_period=_env_int("REGIME_MA_PERIOD", 20),
+            volatility_period=_env_int("REGIME_VOLATILITY_PERIOD", 60),
+            high_vol_threshold=_env_float("REGIME_HIGH_VOL_THRESHOLD", 1.5),
+            trend_strength_period=_env_int("REGIME_TREND_STRENGTH_PERIOD", 20),
+            weak_regime_buy_cap=_env_float("REGIME_WEAK_BUY_CAP", 0.3),
+            bear_max_position=_env_float("REGIME_BEAR_MAX_POSITION", 0.15),
+        )
+
+
+@dataclass
 class AppConfig:
     """全局配置聚合"""
     model: ModelConfig = field(default_factory=ModelConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     paths: PathConfig = field(default_factory=PathConfig)
-    # 新增
-    commission:CommissionConfig= field(default_factory=CommissionConfig)
+    commission: CommissionConfig = field(default_factory=CommissionConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
-    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)  # 新增
+    scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    regime: RegimeConfig = field(default_factory=RegimeConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -267,7 +304,8 @@ class AppConfig:
             paths=PathConfig.from_env(),
             commission=CommissionConfig.from_env(),
             slippage=SlippageConfig.from_env(),
-            scheduler=SchedulerConfig.from_env(),  # 新增这一行
+            scheduler=SchedulerConfig.from_env(),
+            regime=RegimeConfig.from_env(),
         )
 
     def ensure_dirs(self):
@@ -283,30 +321,30 @@ STOCK_CODES = {
     '美的集团': '000333',
 
     # 新能源
-    '国轩高科': '002074',     # 动力电池（替代宁德时代）
-    '隆基绿能': '601012',     # 光伏组件龙头
-    '赛力斯':   '601127',     # 新能源车（华为合作，弹性标的）
-    '比亚迪':   '002594',     # 新能源车整车龙头（与赛力斯互补）
+    '国轩高科': '002074',
+    '隆基绿能': '601012',
+    '赛力斯':   '601127',
+    '比亚迪':   '002594',
 
     # AI / 科技
     '科大讯飞': '002230',
     '海康威视': '002415',
 
-    # 金融（替代东方财富）
-    '中信证券': '600030',     # 券商龙头
+    # 金融
+    '中信证券': '600030',
 
-    # 通信/算力（替代中际旭创）
-    '光迅科技': '002281',     # 光模块/光通信龙头
+    # 通信/算力
+    '光迅科技': '002281',
 
-    # 医药（替代迈瑞医疗）
-    '恒瑞医药': '600276',     # 创新药龙头
+    # 医药
+    '恒瑞医药': '600276',
 
     # 黄金 / 有色 / 资源
     '山东黄金': '600547',
-    '紫金矿业': '601899',     # 铜+金资源龙头
+    '紫金矿业': '601899',
 
-    # 电力/公用事业（防御）
-    '长江电力': '600900',     # 水电龙头
+    # 电力/公用事业
+    '长江电力': '600900',
     '东方电气': '600875',
 
     # 电子/消费电子
@@ -323,6 +361,21 @@ STOCK_CODES = {
     '北新建材': '000786',
 }
 
+# 板块分类（用于组合风控的板块集中度检查）
+SECTOR_MAP = {
+    '600519': '消费', '000333': '消费',
+    '002074': '新能源', '601012': '新能源', '601127': '新能源', '002594': '新能源',
+    '002230': '科技', '002415': '科技', '002281': '科技',
+    '600030': '金融',
+    '600276': '医药',
+    '600547': '资源', '601899': '资源',
+    '600900': '公用事业', '600875': '公用事业',
+    '002241': '电子', '002384': '电子',
+    '600760': '军工',
+    '600598': '农业',
+    '000786': '建材',
+}
+
 # 全局配置单例（延迟初始化）
 _settings: Optional[AppConfig] = None
 
@@ -334,4 +387,3 @@ def get_settings() -> AppConfig:
         _settings = AppConfig.from_env()
         _settings.ensure_dirs()
     return _settings
-

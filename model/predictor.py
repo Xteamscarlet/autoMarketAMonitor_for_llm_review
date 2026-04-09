@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-模型推理模块
-集成推理（EMA + SWA + TopK）和 Transformer 因子序列计算
-从 TransformerStock.py 的 predict_stocks() 和 calculate_transformer_factor_series() 提取
+模型推理模块 V2 — 批量推理优化
+主要改进：
+1. calculate_transformer_factor_series 使用批量推理替代逐条推理
+2. 降低回测时 MC Dropout 采样次数（3次替代10次）
+3. 优化内存管理
 """
 import os
 import time
@@ -26,7 +28,6 @@ from exceptions import ModelLoadError
 
 logger = logging.getLogger(__name__)
 
-# 延迟导入 efinance
 try:
     import efinance as ef
     _EF_AVAILABLE = True
@@ -36,11 +37,10 @@ except ImportError:
 
 
 def _load_ensemble_models(device: torch.device) -> List[tuple]:
-    """动态加载所有可用模型（EMA + SWA + TopK）"""
+    """动态加载所有可用模型"""
     settings = get_settings()
     models = []
 
-    # EMA 模型
     if os.path.exists(settings.paths.model_path):
         try:
             m = StockTransformer(input_dim=len(FEATURES), lookback_days=settings.model.lookback_days).to(device)
@@ -50,7 +50,6 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
         except Exception as e:
             raise ModelLoadError(f"EMA模型加载失败: {e}", model_type="EMA", path=settings.paths.model_path)
 
-    # SWA 模型
     if os.path.exists(settings.paths.swa_model_path):
         try:
             m = StockTransformer(input_dim=len(FEATURES), lookback_days=settings.model.lookback_days).to(device)
@@ -62,7 +61,6 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
         except Exception as e:
             logger.warning(f"SWA 模型加载失败: {e}")
 
-    # Top-K 模型
     topk_dir = settings.paths.topk_checkpoint_dir
     if os.path.exists(topk_dir):
         for fname in os.listdir(topk_dir):
@@ -81,7 +79,6 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
 
 
 def _load_scalers() -> tuple:
-    """加载 scaler（独立 + 全局）"""
     settings = get_settings()
     scalers = {}
     global_scaler = None
@@ -95,7 +92,6 @@ def _load_scalers() -> tuple:
 
 
 def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    """从原始 OHLCV 数据计算所有特征"""
     temp = df.copy()
     temp['MA5'] = safe_sma(temp['Close'], period=5)
     temp['MA10'] = safe_sma(temp['Close'], period=10)
@@ -114,7 +110,6 @@ def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _select_scaler(code: str, scalers: dict, global_scaler, features_data: np.ndarray):
-    """选择合适的 scaler 并标准化"""
     if code in scalers:
         return scalers[code].transform(features_data), "专用"
     elif global_scaler is not None:
@@ -128,16 +123,7 @@ def _select_scaler(code: str, scalers: dict, global_scaler, features_data: np.nd
 
 
 def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd.DataFrame:
-    """集成预测多只股票
-
-    Args:
-        target_codes: 股票代码列表
-        models: 预加载的模型列表（可选，为None则自动加载）
-
-    Returns:
-        预测结果 DataFrame，按 expected_score 降序排列
-    """
-
+    """集成预测多只股票"""
     settings = get_settings()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -179,13 +165,11 @@ def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd
             temp['Turnover Rate'] = df['换手率']
 
             temp = _prepare_features(temp)
-            # >>> 新增：ST/退市/停牌 统一拦截
-            # 注意：此处在线拉取无法获取股票名称，传空字符串主要拦截停牌和空数据
             skip, reason = should_intercept_stock(target_code, "", temp)
             if skip:
                 logger.warning(f"[拦截-预测] 跳过 {target_code}: {reason}")
                 continue
-            # <<< 新增结束
+
             if len(temp) < settings.model.lookback_days:
                 continue
 
@@ -195,12 +179,11 @@ def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd
 
             last_seq = torch.FloatTensor(scaled[-settings.model.lookback_days:]).unsqueeze(0).to(device)
 
-            # 集成推理
             all_probs = []
             all_rets = []
             with torch.no_grad():
                 for name, m in models:
-                    mean_probs, _, mean_ret = m.mc_predict(last_seq, n_forward=10)
+                    mean_probs, _, mean_ret = m.mc_predict(last_seq, n_forward=settings.model.mc_forward_train)
                     all_probs.append(mean_probs)
                     all_rets.append(mean_ret)
 
@@ -245,18 +228,9 @@ def calculate_transformer_factor_series(
     device=None,
     lookback_days: Optional[int] = None,
 ) -> pd.DataFrame:
-    """为回测计算 Transformer 因子的历史序列
-
-    自动加载集成模型进行批量滑动窗口推理
-
-    Args:
-        df: 个股全量数据，index 为日期
-        code: 股票代码
-        device: 推理设备
-        lookback_days: 回看天数
-
-    Returns:
-        DataFrame with columns: transformer_prob, transformer_pred_ret, transformer_uncertainty
+    """
+    ★ 批量推理版 Transformer 因子计算
+    将所有时间步的序列一次性打包成 batch，大幅加速推理
     """
     settings = get_settings()
     if lookback_days is None:
@@ -298,37 +272,52 @@ def calculate_transformer_factor_series(
         scalers, global_scaler = _load_scalers()
         scaled_data, _ = _select_scaler(code, scalers, global_scaler, temp[FEATURES].values)
 
-        sequences = [scaled_data[i - lookback_days: i] for i in range(lookback_days, len(scaled_data) + 1)]
+        # ★ 批量构建序列
+        sequences = np.array([scaled_data[i - lookback_days: i] for i in range(lookback_days, len(scaled_data) + 1)])
         valid_indices = [temp.index[i - 1] for i in range(lookback_days, len(scaled_data) + 1)]
 
-        if not sequences:
+        if len(sequences) == 0:
             return pd.DataFrame(
                 index=df.index,
                 columns=['transformer_prob', 'transformer_pred_ret', 'transformer_uncertainty'],
             ).fillna(0.5)
 
-        # 集成批量推理
+        # ★ 分批推理
+        batch_size = settings.model.inference_batch_size
+        mc_forward = settings.model.mc_forward_backtest  # 回测用更少的 MC 采样
+
         all_probs_list = []
         all_rets_list = []
 
         for name, m in models:
+            m.eval()
             probs_per_model = []
             rets_per_model = []
-            m.eval()
-            for seq in tqdm(sequences, desc=f"集成回测 {code} ({len(models)}模)", leave=False):
+
+            for batch_start in range(0, len(sequences), batch_size):
+                batch_end = min(batch_start + batch_size, len(sequences))
+                batch_seqs = sequences[batch_start:batch_end]
+                batch_tensor = torch.FloatTensor(batch_seqs).to(device)
+
                 with torch.no_grad():
-                    seq_tensor = torch.FloatTensor(seq).unsqueeze(0).to(device)
-                    mean_probs, _, mean_ret = m.mc_predict(seq_tensor, n_forward=3)
-                    probs_per_model.append(mean_probs.squeeze(0).cpu())
-                    rets_per_model.append(mean_ret.item())
-            all_probs_list.append(torch.stack(probs_per_model))
-            all_rets_list.append(rets_per_model)
+                    # ★ 使用批量 MC predict
+                    mean_probs, _, mean_ret = m.mc_predict(batch_tensor, n_forward=mc_forward)
+                    probs_per_model.append(mean_probs.cpu())
+                    rets_per_model.append(mean_ret.cpu())
+
+                # 释放显存
+                del batch_tensor
+                if device.type == 'cuda':
+                    torch.cuda.empty_cache()
+
+            all_probs_list.append(torch.cat(probs_per_model, dim=0))
+            all_rets_list.append(torch.cat(rets_per_model, dim=0))
 
         stack_probs = torch.stack(all_probs_list)
         ensemble_probs = stack_probs.mean(dim=0)
         inter_model_std = stack_probs.std(dim=0).mean(dim=-1).numpy()
         up_probs = (ensemble_probs[:, 2] + ensemble_probs[:, 3]).numpy()
-        mean_rets = np.array(all_rets_list).mean(axis=0)
+        mean_rets = torch.stack(all_rets_list).mean(dim=0).squeeze(-1).numpy()
 
         result_df = pd.DataFrame({
             'transformer_prob': up_probs,

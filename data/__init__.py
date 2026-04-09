@@ -12,6 +12,7 @@ from data.cache import (
     save_transformer_cache,
 )
 from data.indicators import calculate_all_indicators, calculate_orthogonal_factors
+from data.regime import get_market_regime, get_market_regime_enhanced, RegimeInfo
 
 __all__ = [
     "FEATURES",
@@ -30,4 +31,7 @@ __all__ = [
     "save_transformer_cache",
     "calculate_all_indicators",
     "calculate_orthogonal_factors",
+    "get_market_regime",
+    "get_market_regime_enhanced",
+    "RegimeInfo",
 ]

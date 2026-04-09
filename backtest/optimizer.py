@@ -1,8 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-参数优化模块
-Optuna 多目标优化 + Walk-Forward 划分
-从 backtest_market_v2.py 提取
+参数优化模块 V2 — 收益优化版
+主要改进：
+1. Walk-Forward 使用扩展窗口（expanding window）
+2. Optuna 搜索空间加宽，step 更细
+3. 新增 bear 市场状态参数优化
+4. 目标函数增加 Sortino 比率作为第三目标
+5. 修复 6-tuple 与 4-tuple 不兼容问题
 """
 import logging
 from typing import Dict, Tuple, Optional, List
@@ -12,7 +16,6 @@ import pandas as pd
 from numpy.lib.stride_tricks import sliding_window_view
 from scipy.stats import spearmanr
 import optuna
-from sklearn.model_selection import TimeSeriesSplit
 
 from data.types import NON_FACTOR_COLS, TRADITIONAL_FACTOR_COLS
 from backtest.evaluator import calculate_comprehensive_stats
@@ -20,12 +23,11 @@ from config import get_settings
 
 logger = logging.getLogger(__name__)
 
-# 抑制 Optuna 日志
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def calculate_dynamic_weights(df: pd.DataFrame, factor_cols: list, ic_window_range=(20, 120), use_ewma=True) -> Dict[str, float]:
-    """基于 IC/ICIR 的动态权重计算"""
+    """基于 IC/ICIR 的动态权重计算（保持不变）"""
     target = df['Close'].pct_change(5).rename('target_return')
     icir_dict = {}
 
@@ -84,83 +86,111 @@ def walk_forward_split(
         gap_days: int = 20,
         min_train_size: int = 100,
         min_test_size: int = 20,
+        expanding_window: bool = True,
 ) -> List[Tuple[int, int, int, int, int, int]]:
     """
-    Walk-Forward 划分（支持训练集、验证集、测试集）
+    Walk-Forward 划分 V2（支持扩展窗口）
 
     参数:
         df: 股票数据 DataFrame
         n_splits: 划分次数
-        train_ratio: 训练集比例
+        train_ratio: 初始训练集比例
         val_ratio: 验证集比例
-        gap_days: 训练集和验证集之间的间隔天数（防止数据泄露）
+        gap_days: 间隔天数
         min_train_size: 训练集最小样本数
         min_test_size: 测试集最小样本数
+        expanding_window: 是否使用扩展窗口（True=训练集不断扩大，False=固定大小滚动）
 
     返回:
         列表，每个元素是 (train_start, train_end, val_start, val_end, test_start, test_end)
     """
     total_len = len(df)
-    test_ratio = 1.0 - train_ratio - val_ratio  # 自动计算测试集比例
+    test_ratio = 1.0 - train_ratio - val_ratio
 
     if test_ratio <= 0:
         raise ValueError(f"train_ratio + val_ratio 必须小于 1，当前为 {train_ratio + val_ratio}")
 
-    # 计算各部分的长度
     train_len = int(total_len * train_ratio)
     val_len = int(total_len * val_ratio)
     test_len = int(total_len * test_ratio)
 
     print(f"\n数据总长度: {total_len}")
-    print(f"训练集长度: {train_len} ({train_ratio * 100:.1f}%)")
+    print(f"初始训练集长度: {train_len} ({train_ratio * 100:.1f}%)")
     print(f"验证集长度: {val_len} ({val_ratio * 100:.1f}%)")
     print(f"测试集长度: {test_len} ({test_ratio * 100:.1f}%)")
     print(f"间隔天数: {gap_days}")
+    print(f"扩展窗口: {expanding_window}")
 
     splits = []
-    start_idx = 0
 
-    for i in range(n_splits):
-        # 计算训练集的起止索引
-        train_start = start_idx
-        train_end = train_start + train_len
+    if expanding_window:
+        # 扩展窗口模式：训练集不断扩大，测试集滚动
+        # 初始：用前 train_ratio 的数据训练
+        first_train_end = train_len
 
-        # 验证集：在训练集之后，间隔 gap_days
-        val_start = train_end + gap_days
-        val_end = val_start + val_len
+        for i in range(n_splits):
+            if expanding_window:
+                train_start = 0
+                train_end = first_train_end + i * test_len  # 训练集不断扩大
+            else:
+                train_start = i * test_len
+                train_end = train_start + train_len
 
-        # 测试集：在验证集之后，间隔 gap_days
-        test_start = val_end + gap_days
-        test_end = min(test_start + test_len, total_len)
+            val_start = train_end + gap_days
+            val_end = val_start + val_len
 
-        # 检查是否超出数据范围
-        if test_start >= total_len:
-            print(f"\n第 {i + 1} 次划分：测试集超出数据范围，停止划分")
-            break
+            test_start = val_end + gap_days
+            test_end = min(test_start + test_len, total_len)
 
-        # 检查最小样本数
-        actual_train_len = train_end - train_start
-        actual_val_len = val_end - val_start
-        actual_test_len = test_end - test_start
+            if test_start >= total_len:
+                print(f"\n第 {i + 1} 次划分：测试集超出数据范围，停止划分")
+                break
 
-        if actual_train_len < min_train_size:
-            print(f"\n第 {i + 1} 次划分：训练集样本数不足 ({actual_train_len} < {min_train_size})，停止划分")
-            break
+            actual_train_len = train_end - train_start
+            actual_val_len = val_end - val_start
+            actual_test_len = test_end - test_start
 
-        if actual_test_len < min_test_size:
-            print(f"\n第 {i + 1} 次划分：测试集样本数不足 ({actual_test_len} < {min_test_size})，停止划分")
-            break
+            if actual_train_len < min_train_size:
+                print(f"\n第 {i + 1} 次划分：训练集样本数不足 ({actual_train_len} < {min_train_size})，停止划分")
+                break
 
-        # 保存划分结果
-        splits.append((train_start, train_end, val_start, val_end, test_start, test_end))
+            if actual_test_len < min_test_size:
+                print(f"\n第 {i + 1} 次划分：测试集样本数不足 ({actual_test_len} < {min_test_size})，停止划分")
+                break
 
-        print(f"第 {i + 1} 次划分:")
-        print(f"  训练集: [{train_start}:{train_end}] ({actual_train_len} 天)")
-        print(f"  验证集: [{val_start}:{val_end}] ({actual_val_len} 天)")
-        print(f"  测试集: [{test_start}:{test_end}] ({actual_test_len} 天)")
+            splits.append((train_start, train_end, val_start, val_end, test_start, test_end))
 
-        # 下一次划分的起始位置（滚动窗口）
-        start_idx += test_len + gap_days
+            print(f"第 {i + 1} 次划分:")
+            print(f"  训练集: [{train_start}:{train_end}] ({actual_train_len} 天)")
+            print(f"  验证集: [{val_start}:{val_end}] ({actual_val_len} 天)")
+            print(f"  测试集: [{test_start}:{test_end}] ({actual_test_len} 天)")
+    else:
+        # 固定窗口滚动模式（原逻辑）
+        start_idx = 0
+        for i in range(n_splits):
+            train_start = start_idx
+            train_end = train_start + train_len
+
+            val_start = train_end + gap_days
+            val_end = val_start + val_len
+
+            test_start = val_end + gap_days
+            test_end = min(test_start + test_len, total_len)
+
+            if test_start >= total_len:
+                break
+
+            actual_train_len = train_end - train_start
+            actual_val_len = val_end - val_start
+            actual_test_len = test_end - test_start
+
+            if actual_train_len < min_train_size:
+                break
+            if actual_test_len < min_test_size:
+                break
+
+            splits.append((train_start, train_end, val_start, val_end, test_start, test_end))
+            start_idx += test_len + gap_days
 
     print(f"\n总共生成 {len(splits)} 次有效划分")
     return splits
@@ -172,12 +202,10 @@ def optimize_strategy(
     market_data: Optional[pd.DataFrame],
     stocks_data: Optional[Dict],
 ) -> Tuple[Dict[str, dict], Dict[str, float]]:
-    """参数优化（单次，无交叉验证）"""
+    """参数优化 V2（加宽搜索空间，增加 bear 状态）"""
     from backtest.engine import run_backtest_loop
     from data.indicators import calculate_orthogonal_factors
-    # ✅ 防御性检查：如果外面忘记算因子了，这里兜底算一下
-    # 正常情况下，process_single_stock 传进来的 train_df 已经有因子了，不会走这里
-    # ✅ 无条件赋值，外层算好的因子直接用
+
     df = train_df.copy()
     if 'transformer_prob' not in train_df.columns or 'mom_10' not in train_df.columns:
         print(f" [警告] {stock_code} 传入 optimize_strategy 的数据缺少因子列，正在补充计算...")
@@ -187,19 +215,21 @@ def optimize_strategy(
     weights = calculate_dynamic_weights(df, factor_cols)
 
     def objective(trial, regime):
+        # ★ 搜索空间加宽，step 更细
         trial_params = {
-            'buy_threshold': trial.suggest_float('buy_threshold', 0.5, 0.7, step=0.05),
-            'sell_threshold': trial.suggest_float('sell_threshold', -0.4, 0.0, step=0.05),
-            'hold_days': trial.suggest_int('hold_days', 5, 25, step=5),
-            'stop_loss': trial.suggest_float('stop_loss', -0.10, -0.05, step=0.01),
-            'trailing_profit_level1': trial.suggest_float('trailing_profit_level1', 0.05, 0.08, step=0.01),
-            'trailing_profit_level2': trial.suggest_float('trailing_profit_level2', 0.10, 0.15, step=0.01),
-            'trailing_drawdown_level1': trial.suggest_float('trailing_drawdown_level1', 0.05, 0.10, step=0.01),
-            'trailing_drawdown_level2': trial.suggest_float('trailing_drawdown_level2', 0.03, 0.05, step=0.01),
-            'take_profit_multiplier': trial.suggest_float('take_profit_multiplier', 2.0, 4.0, step=0.5),
-            'transformer_weight': trial.suggest_float('transformer_weight', 0.0, 0.5, step=0.05),
-            'transformer_buy_threshold': trial.suggest_float('transformer_buy_threshold', 0.6, 0.8, step=0.05),
-            'confidence_threshold': trial.suggest_float('confidence_threshold', 0.4, 0.7, step=0.05),
+            'buy_threshold': trial.suggest_float('buy_threshold', 0.45, 0.75, step=0.025),
+            'sell_threshold': trial.suggest_float('sell_threshold', -0.45, 0.05, step=0.025),
+            'hold_days': trial.suggest_int('hold_days', 5, 30, step=3),
+            'stop_loss': trial.suggest_float('stop_loss', -0.12, -0.03, step=0.005),
+            'trailing_profit_level1': trial.suggest_float('trailing_profit_level1', 0.03, 0.10, step=0.005),
+            'trailing_profit_level2': trial.suggest_float('trailing_profit_level2', 0.08, 0.20, step=0.01),
+            'trailing_drawdown_level1': trial.suggest_float('trailing_drawdown_level1', 0.03, 0.12, step=0.005),
+            'trailing_drawdown_level2': trial.suggest_float('trailing_drawdown_level2', 0.02, 0.06, step=0.005),
+            'take_profit_multiplier': trial.suggest_float('take_profit_multiplier', 1.5, 5.0, step=0.25),
+            'transformer_weight': trial.suggest_float('transformer_weight', 0.0, 0.6, step=0.05),
+            'transformer_buy_threshold': trial.suggest_float('transformer_buy_threshold', 0.50, 0.85, step=0.025),
+            'transformer_sell_threshold': trial.suggest_float('transformer_sell_threshold', 0.15, 0.45, step=0.025),
+            'confidence_threshold': trial.suggest_float('confidence_threshold', 0.3, 0.7, step=0.025),
         }
 
         if trial_params['buy_threshold'] <= trial_params['sell_threshold']:
@@ -224,20 +254,28 @@ def optimize_strategy(
         mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
         sharpe = (trades_df['net_return'].mean() / (trades_df['net_return'].std() + 1e-6)) * np.sqrt(252)
 
+        # ★ Sortino 作为第三目标
+        downside = trades_df['net_return'][trades_df['net_return'] < 0]
+        downside_std = downside.std() if len(downside) > 1 else 1e-6
+        sortino = (trades_df['net_return'].mean() / (downside_std + 1e-6)) * np.sqrt(252)
+
         win_rate = (trades_df['net_return'] > 0).mean()
         penalty = 0.0
-        if win_rate < 0.4:
+        if win_rate < 0.35:
             penalty = -0.5
         if len(trades_df) < 5:
             penalty = -1.0
 
-        return float(ret), float(-mdd + penalty), float(sharpe)
+        return float(ret), float(-mdd + penalty), float(sortino)
 
     from data.types import ALL_REGIMES
     settings = get_settings()
     best_params_map = {}
 
-    for regime in ALL_REGIMES:
+    # ★ 扩展到5种市场状态
+    extended_regimes = ['strong_bull', 'bull', 'neutral', 'weak', 'bear']
+
+    for regime in extended_regimes:
         study = optuna.create_study(
             directions=["maximize", "maximize", "maximize"],
             sampler=optuna.samplers.NSGAIISampler(seed=42),
@@ -246,16 +284,18 @@ def optimize_strategy(
         study.optimize(lambda t: objective(t, regime), n_trials=settings.backtest.n_optuna_trials)
 
         if len(study.best_trials) > 0:
+            # 选择 Sortino 最高的 Pareto 前沿解（更关注下行风险控制）
             best_t = max(study.best_trials, key=lambda t: t.values[2])
             best_params_map[regime] = best_t.params
         else:
+            # 默认参数
             best_params_map[regime] = {
                 'buy_threshold': 0.6, 'sell_threshold': -0.2, 'hold_days': 15,
                 'stop_loss': -0.08, 'trailing_profit_level1': 0.06,
                 'trailing_profit_level2': 0.12, 'trailing_drawdown_level1': 0.08,
                 'trailing_drawdown_level2': 0.04, 'take_profit_multiplier': 3.0,
                 'transformer_weight': 0.2, 'transformer_buy_threshold': 0.65,
-                'confidence_threshold': 0.5,
+                'transformer_sell_threshold': 0.3, 'confidence_threshold': 0.5,
             }
 
     return best_params_map, weights
