@@ -1,8 +1,8 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """
-鍥炴祴寮曟搸锛堟棤Transformer鐗堟湰锛?
-鎵ц鍗曡偂鍥炴祴寰幆锛屽鐞嗕拱鍗栦俊鍙枫€佷粨浣嶇鐞嗐€佷氦鏄撴垚鏈?
-绉婚櫎浜嗘墍鏈?Transformer 鐩稿叧鐨勪拱鍏ヨ繃婊ゆ潯浠?
+回测引擎（无Transformer版本）
+执行单股回测循环，处理买卖信号、仓位管理、交易成本
+移除了所有 Transformer 相关的买入过滤条件
 """
 import logging
 from typing import Optional, Dict, List, Tuple
@@ -33,8 +33,8 @@ def calculate_transaction_cost(
     transfer_fee_rate: Optional[float] = None,
 ) -> float:
     """
-    璁＄畻浜ゆ槗鎴愭湰锛堜剑閲?+ 鍗拌姳绋?+ 杩囨埛璐癸級
-    鈽?淇锛氱紦瀛?CommissionConfig 閬垮厤寰幆鍐呴噸澶嶈鍙?
+    计算交易成本（佣金 + 印花税 + 过户费）
+    修复：缓存 CommissionConfig 避免循环内重复读取
     """
     global _commission_cache
     if _commission_cache is None:
@@ -50,13 +50,13 @@ def calculate_transaction_cost(
     if transfer_fee_rate is None:
         transfer_fee_rate = _commission_cfg.transfer_fee_rate
 
-    # 浣ｉ噾锛堜拱鍗栭兘鏀讹級
+    # 佣金（买卖都收）
     commission = max(price * shares * commission_rate, min_commission)
 
-    # 鍗拌姳绋庯紙浠呭崠鍑烘敹鍙栵紝鍗冨垎涔?.5锛?
+    # 印花税（仅卖出收取，千分之0.5）
     stamp_duty = price * shares * stamp_duty_rate if direction == 'sell' else 0
 
-    # 杩囨埛璐癸紙娌競鑲＄エ锛屼拱鍗栭兘鏀讹紝鍗佷竾鍒嗕箣涓€锛?
+    # 过户费（沪深股票，买卖都收，十万分之一）
     transfer_fee = price * shares * transfer_fee_rate if code.startswith('6') else 0
 
     return commission + stamp_duty + transfer_fee
@@ -138,7 +138,7 @@ def run_backtest_loop_no_transformer(
         import talib as ta
         df['atr'] = ta.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
 
-    # 婊戠偣閰嶇疆
+    # 滑点配置
     _slippage_cfg = SlippageConfig.from_env()
     buy_slippage_rate = _slippage_cfg.buy_slippage_rate
     sell_slippage_rate = _slippage_cfg.sell_slippage_rate
@@ -151,7 +151,7 @@ def run_backtest_loop_no_transformer(
     actual_buy_cost = 0.0
     peak_price = 0.0
 
-    # 妫€鏌ユ槸鍚︽湁 Transformer 鍥犲瓙锛堝簲璇ユ病鏈夛紝浣嗗仛闃插尽鎬ф鏌ワ級
+    # 检查是否有 Transformer 因子（应该没有，但做防御性检查）
     has_transformer_conf = 'transformer_conf' in df.columns and not df['transformer_conf'].isna().all()
     has_pred_ret = 'transformer_pred_ret' in df.columns and not df['transformer_pred_ret'].isna().all()
 
@@ -160,15 +160,15 @@ def run_backtest_loop_no_transformer(
         price = df['Close'].iloc[i]
         score = df['Combined_Score'].iloc[i]
 
-        # 鍔ㄦ€佸競鍦虹姸鎬佸垽鏂?
+        # 动态市场状态判断
         current_regime = regime if regime else get_market_regime(market_data, date)
         p = params.get(current_regime, params.get('neutral', params))
 
-        # ========== 鎸佷粨鏃跺鐞嗗崠鍑洪€昏緫 ==========
+        # ========== 持仓时处理卖出逻辑 ==========
         if position > 0:
-            # 鈽?T+1 闄愬埗锛氫拱鍏ュ綋澶╀笉鑳藉崠鍑?
+            # T+1 限制：买入当天不能卖出
             if buy_date is not None and date <= buy_date:
-                # 鏇存柊 peak 浣嗕笉鎵ц鍗栧嚭
+                # 更新 peak 但不执行卖出
                 if price > peak_price:
                     peak_price = price
                 continue
@@ -182,7 +182,7 @@ def run_backtest_loop_no_transformer(
             if unrealized_profit <= p.get('stop_loss', -0.08):
                 sell_reason = 'stop_loss'
 
-            # 绉诲姩姝㈡崯
+            # 移动止损
             if sell_reason is None and unrealized_profit >= p.get('trailing_profit_level1', 0.06):
                 if drawdown_from_peak >= p.get('trailing_drawdown_level1', 0.08):
                     sell_reason = 'trailing'
@@ -195,11 +195,11 @@ def run_backtest_loop_no_transformer(
             if sell_reason is None and (date - buy_date).days >= p.get('hold_days', 15):
                 sell_reason = 'time_stop'
 
-            # 淇″彿琛板噺
+            # 信号衰减
             if sell_reason is None and score < p.get('sell_threshold', -0.2):
                 sell_reason = 'signal_decay'
 
-            # 鍔ㄦ€佹鐩?
+            # 动态止盈
             if sell_reason is None:
                 atr = df['atr'].iloc[i] if not pd.isna(df['atr'].iloc[i]) else price * 0.02
                 if unrealized_profit >= p.get('take_profit_multiplier', 3.0) * (atr / buy_price_raw):

@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-妯″瀷璁粌妯″潡 V2 锟?绐佺牬 val_loss 鐡堕
-鏍稿績鏀瑰姩锟?
-1. 鏍囩浣撶郴锟?鍒嗙被鈫掑姩鎬侀槇锟?绫诲埆鍔犳潈锛堣В鍐崇被鍒笉骞宠　锟?
-2. 鎹熷け鍑芥暟锛欶ocal Loss 鏇夸唬 CrossEntropy锛堣仛鐒﹂毦鍒嗘牱鏈級+ 鍥炲綊鎹熷け鑷€傚簲鏉冮噸
-3. 鏁版嵁澧炲己锛氶檷浣庡己搴︼紝閲戣瀺鏁版嵁涓嶈兘闅忔剰缂╂斁
-4. 鐗瑰緛宸ョ▼锛氬鍔犳敹鐩婄巼鐗瑰緛锛屾彁楂樹俊鍙峰瘑锟?
-5. 璁粌绛栫暐锛氭洿锟?epochs + cosine annealing + 鏇撮珮鍒濆瀛︿範锟?
-6. 鏍囩骞虫粦锟?.1锟?.05锛堥噾铻嶆暟鎹凡楂樺櫔澹帮紝涓嶉渶瑕佽繃澶氬钩婊戯級
-7. 鏍囧噯鍖栵細quantile_range (5,95)锟?10,90)锛屼繚鐣欐洿澶氬尯鍒嗗害
+模型训练模块 V2 — 突破 val_loss 瓶颈
+核心改动：
+1. 标签体系：分类→动态阈值（4类别加权，解决类别不平衡）
+2. 损失函数：Focal Loss 替代 CrossEntropy（聚焦难分样本）+ 回归损失自适应权重
+3. 数据增强：降低强度，金融数据不能随意缩放
+4. 特征工程：增加收益率特征，提高信号密度
+5. 训练策略：更多 epochs + cosine annealing + 更高初始学习率
+6. 标签平滑 0.1→0.05（金融数据已高噪声，不需要过多平滑）
+7. 标准化：quantile_range (5,95)→(10,90)，保留更多区分度
 """
 import os
 import glob
@@ -41,19 +41,19 @@ logger = logging.getLogger(__name__)
 # ==================== Focal Loss ====================
 
 class FocalLoss(nn.Module):
-    """Focal Loss 锟?鑱氱劍闅惧垎鏍锋湰锛岃В鍐崇被鍒笉骞宠　
+    """Focal Loss — 聚焦难分版本，解决类别不平衡
     
     FL(p_t) = -alpha_t * (1 - p_t)^gamma * log(p_t)
     
-    gamma > 0 鍑忓皯鏄撳垎鏍锋湰鐨勬崯澶辫础鐚紝鑱氱劍闅惧垎鏍锋湰
-    alpha 鐢ㄤ簬绫诲埆鍔犳潈
+    gamma > 0 减少易分版本的损失贡献，聚焦难分样本
+    alpha 用于类别加权
     """
     def __init__(self, alpha=None, gamma=2.0, label_smoothing=0.05, reduction='none'):
         super().__init__()
         self.gamma = gamma
         self.label_smoothing = label_smoothing
         self.reduction = reduction
-        # alpha: 绫诲埆鏉冮噸 [C]
+        # alpha: 类别权重 [C]
         self.register_buffer('alpha', None)
         if alpha is not None:
             if isinstance(alpha, (list, np.ndarray)):
@@ -68,10 +68,10 @@ class FocalLoss(nn.Module):
             sample_weights: [B] 鏃堕棿琛板噺鏉冮噸
         """
         ce_loss = F.cross_entropy(logits, targets, reduction='none', label_smoothing=self.label_smoothing)
-        pt = torch.exp(-ce_loss)  # p_t = softmax姒傜巼涓纭被鍒殑姒傜巼
+        pt = torch.exp(-ce_loss)  # p_t = softmax概率中正确类别的概率
         focal_loss = ((1 - pt) ** self.gamma) * ce_loss
 
-        # 绫诲埆鍔犳潈
+        # 类别加权
         if self.alpha is not None and self.alpha.device != logits.device:
             self.alpha = self.alpha.to(logits.device)
         if self.alpha is not None:
@@ -89,10 +89,10 @@ class FocalLoss(nn.Module):
         return focal_loss
 
 
-# ==================== 璁粌杈呭姪缁勪欢 ====================
+# ==================== 训练辅助组件 ====================
 
 class CosineAnnealingWarmRestarts:
-    """浣欏鸡閫€锟?+ 鐑噸鍚皟搴﹀櫒"""
+    """余弦退火 + 热重启调度器"""
     def __init__(self, optimizer, T_0=10, T_mult=2, eta_min=1e-6):
         self.optimizer = optimizer
         self.T_0 = T_0
@@ -119,7 +119,7 @@ class CosineAnnealingWarmRestarts:
 
 
 class FinanceScheduler:
-    """閲戣瀺涓撶敤璋冨害鍣細Warmup + Plateau + Cyclical寰渿锟?"""
+    """金融专用调度器：Warmup + Plateau + Cyclical微震"""
 
     def __init__(self, optimizer, warmup_steps=1000, base_lr=3e-5, min_lr=1e-6,
                  plateau_patience=2, plateau_factor=0.5, cycle_amplitude=0.2, cycle_length=5):
@@ -209,7 +209,7 @@ class TopKCheckpoint:
             try:
                 os.remove(stale_path)
             except OSError:
-                logger.warning(f"鏃犳硶鍒犻櫎鏃?Top-K 鏂囦欢: {stale_path}")
+                logger.warning(f"无法初始化 Top-K 文件: {stale_path}")
 
     def save(self, model, val_loss, epoch):
         if np.isnan(val_loss) or np.isinf(val_loss):
@@ -307,7 +307,7 @@ def evaluate_model(
     )
 
 
-# ==================== 鏁版嵁锟?V2 ====================
+# ==================== 数据集 V2 ====================
 
 class MultiStockDatasetV2(torch.utils.data.Dataset):
     def __init__(self, combined_df, lookback_days, label_mode='dynamic', thresholds=None):
@@ -402,18 +402,18 @@ class MultiStockDatasetV2(torch.utils.data.Dataset):
                 if np.isnan(ret) or np.isinf(ret):
                     continue
 
-                # 锟?鍔ㄦ€侀槇鍊兼爣绛撅紙鏇夸唬鍥哄畾 5%锟?
+                # 动态阈值标签（替代固定 5%）
                 if self.label_mode == 'dynamic':
                     if ret > self.q90:
-                        label = 3  # 澶ф定
+                        label = 3  # 大涨
                     elif ret > self.q75:
-                        label = 2  # 灏忔定
+                        label = 2  # 小涨
                     elif ret > self.q25:
-                        label = 1  # 灏忚穼
+                        label = 1  # 小跌
                     else:
-                        label = 0  # 澶ц穼
+                        label = 0  # 大跌
                 else:
-                    # 鍘熷鍥哄畾闃堬拷?
+                    # 原始固定阈值
                     if ret > 0.05:
                         label = 3
                     elif ret > 0:
@@ -470,7 +470,78 @@ class WeightedMultiStockDatasetV2(MultiStockDatasetV2):
         )
 
 
-# ==================== 璁粌涓诲嚱锟?V2 ====================
+# ==================== 数据集 V2 ====================
+
+def _compute_epoch_metrics(
+    model, data_loader, device, loss_fn, ret_loss_weight,
+    amp_dtype, ret_scale=0.05, prefix="val",
+):
+    """Compute full epoch metrics: loss + cls_accuracy + macro_F1 + up/down precision + ret MAE + ret IC"""
+    from sklearn.metrics import accuracy_score, f1_score, precision_score
+    from scipy.stats import spearmanr
+
+    model.eval()
+    total_loss = total_cls_loss = total_ret_loss = 0.0
+    all_labels, all_preds = [], []
+    all_ret_true, all_ret_pred = [], []
+    valid_batches = 0
+
+    with torch.no_grad():
+        for seq, lab, rets, weights in data_loader:
+            seq, lab, rets, weights = seq.to(device), lab.to(device), rets.to(device), weights.to(device)
+            if torch.isnan(seq).any() or torch.isinf(seq).any():
+                continue
+            autocast_enabled = amp_dtype is not None
+            with autocast(device_type=device.type, dtype=amp_dtype, enabled=autocast_enabled):
+                logits, ret_pred = model(seq)
+                if torch.isnan(logits).any() or torch.isnan(ret_pred).any():
+                    continue
+                loss_cls = loss_fn(logits, lab, sample_weights=weights).mean()
+                rets_norm = rets / ret_scale
+                loss_ret = nn.SmoothL1Loss(reduction='none')(ret_pred.squeeze(), rets_norm.squeeze())
+                loss_ret = (loss_ret * weights).mean()
+                loss = loss_cls + ret_loss_weight * loss_ret
+            total_loss += loss.item()
+            total_cls_loss += loss_cls.item()
+            total_ret_loss += loss_ret.item()
+            valid_batches += 1
+            all_preds.extend(logits.argmax(dim=-1).cpu().numpy().tolist())
+            all_labels.extend(lab.cpu().numpy().tolist())
+            all_ret_pred.extend((ret_pred.squeeze() * ret_scale).cpu().numpy().tolist())
+            all_ret_true.extend(rets.squeeze().cpu().numpy().tolist())
+
+    inf = float('inf')
+    if valid_batches == 0:
+        return {prefix + k: v for k, v in {'_loss': inf, '_cls_loss': inf, '_ret_loss': inf,
+                '_cls_acc': 0.0, '_macro_f1': 0.0, '_up_precision': 0.0,
+                '_down_precision': 0.0, '_ret_mae': inf, '_ret_ic': 0.0}.items()}
+
+    result = {prefix + '_loss': total_loss / valid_batches,
+              prefix + '_cls_loss': total_cls_loss / valid_batches,
+              prefix + '_ret_loss': total_ret_loss / valid_batches}
+    result[prefix + '_cls_acc'] = accuracy_score(all_labels, all_preds)
+    try:
+        result[prefix + '_macro_f1'] = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+    except: result[prefix + '_macro_f1'] = 0.0
+    try:
+        bt = [1 if l >= 2 else 0 for l in all_labels]
+        bp = [1 if p >= 2 else 0 for p in all_preds]
+        pr = precision_score(bt, bp, average=None, zero_division=0)
+        result[prefix + '_down_precision'] = float(pr[0]) if len(pr) >= 2 else 0.0
+        result[prefix + '_up_precision'] = float(pr[1]) if len(pr) >= 2 else 0.0
+    except: result[prefix + '_up_precision'] = result[prefix + '_down_precision'] = 0.0
+
+    rp, rt = np.array(all_ret_pred), np.array(all_ret_true)
+    vm = ~(np.isnan(rp) | np.isnan(rt) | np.isinf(rp) | np.isinf(rt))
+    result[prefix + '_ret_mae'] = float(np.mean(np.abs(rp[vm] - rt[vm]))) if vm.sum() > 10 else inf
+    if vm.sum() > 20:
+        try:
+            ic, _ = spearmanr(rp[vm], rt[vm])
+            result[prefix + '_ret_ic'] = float(ic) if not np.isnan(ic) else 0.0
+        except: result[prefix + '_ret_ic'] = 0.0
+    else: result[prefix + '_ret_ic'] = 0.0
+    return result
+
 
 def train_model(settings: Optional[AppConfig] = None) -> None:
     if settings is None:
@@ -480,16 +551,16 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     pc = settings.paths
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"浣跨敤璁惧: {device}")
+    logger.info(f"使用设备: {device}")
 
-    # ========== 1. 鏁版嵁鍔犺浇 ==========
+    # ========== 1. 数据加载 ==========
     if os.path.exists(pc.stock_data_file):
         combined_df = pd.read_feather(pc.stock_data_file)
     else:
-        raise FileNotFoundError(f"鏁版嵁鏂囦欢涓嶅瓨锟? {pc.stock_data_file}")
+        raise FileNotFoundError(f"数据文件不存在: {pc.stock_data_file}")
 
-    # ========== 2. 鏁版嵁棰勫锟?==========
-    logger.info("鏁版嵁棰勫鐞嗭細涓ユ牸娓呮礂...")
+    # ========== 2. 数据预处理 ==========
+    logger.info("数据预处理：严格清洗...")
     if 'Code' not in combined_df.columns or 'Date' not in combined_df.columns:
         if 'Date' not in combined_df.columns and combined_df.index.name == 'Date':
             combined_df = combined_df.reset_index()
@@ -510,7 +581,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         (combined_df['daily_ret'].abs() <= 0.3) | (combined_df['daily_ret'].isna())
     ]
 
-    # 锟?鏂板锛氭敹鐩婄巼鐗瑰緛锛堟彁楂樹俊鍙峰瘑搴︼級
+    # 新增：收益率特征（提高信号密度，覆盖多周期）
     for lag in [1, 3, 5, 10]:
         col_name = f"ret_{lag}"
         combined_df[col_name] = combined_df.groupby("Code")["Close"].pct_change(lag)
@@ -538,10 +609,10 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     combined_df = combined_df.dropna(subset=FEATURES)
     combined_df = combined_df.reset_index(drop=True)
-    logger.info(f"娓呮礂鍚庢暟鎹噺: {len(combined_df)}")
+    logger.info(f"清洗后数据量: {len(combined_df)}")
 
-    # ========== 3. 鎸夎偂绁ㄥ垝锟?+ 鐙珛鏍囧噯锟?==========
-    logger.info("鎸夎偂绁ㄥ垝鍒嗚缁冮泦/楠岃瘉闆嗭紝鐙珛鏍囧噯锟?..")
+    # ========== 3. 按股票划分训练集/验证集，独立标准化 ==========
+    logger.info("按股票划分训练集/验证集，独立标准化...")
     scalers = {}
     train_dfs = []
     val_dfs = []
@@ -573,7 +644,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             continue
 
         try:
-            # 锟?鏍囧噯鍖栬寖鍥达細(5,95) 锟?(10,90)锛屼繚鐣欐洿澶氬尯鍒嗗害
+            # 标准化范围 (5,95) → (10,90)，保留更多区分度
             scaler = RobustScaler(quantile_range=(10, 90))
             train_part[FEATURES] = scaler.fit_transform(train_part[FEATURES])
             val_part[FEATURES] = scaler.transform(val_part[FEATURES])
@@ -593,13 +664,13 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             continue
 
     if not train_dfs:
-        raise ValueError("娌℃湁瓒冲鐨勬湁鏁堟暟鎹敤浜庤缁冿紒")
+        raise ValueError("没有足够的有效数据用于训练！")
 
     train_df = pd.concat(train_dfs, ignore_index=True)
     val_df = pd.concat(val_dfs, ignore_index=True)
 
     joblib.dump(scalers, pc.scaler_path)
-    logger.info(f"宸蹭繚锟?{len(scalers)} 涓偂绁ㄧ殑鐙珛 scaler")
+    logger.info(f"已保存 {len(scalers)} 个股票的独立 scaler")
 
     all_train_data = train_df[FEATURES].values
     global_scaler = RobustScaler(quantile_range=(10, 90))
@@ -630,7 +701,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     else:
         val_df['time_weight'] = 1.0
 
-    # ========== 5. 鍒涘缓鏁版嵁闆嗭紙V2 鍔ㄦ€佹爣绛撅級 ==========
+    # ========== 5. 创建数据集（V2 动态标签） ==========
     # ★ 修复6: train 集自算分位数；val 集复用 train 阈值，保证标签定义一致
     train_dataset = WeightedMultiStockDatasetV2(
         train_df, mc.lookback_days, augment=True, label_mode='dynamic',
@@ -648,11 +719,11 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         thresholds=train_thresholds,
     )
 
-    # 锟?鑾峰彇绫诲埆鏉冮噸鐢ㄤ簬 Focal Loss
+    # 获取类别权重用于 Focal Loss
     class_weights = torch.FloatTensor(train_dataset.class_weights).to(device)
-    logger.info(f"绫诲埆鏉冮噸: {class_weights.cpu().numpy()}")
+    logger.info(f"类别权重: {class_weights.cpu().numpy()}")
 
-    logger.info(f"璁粌锟? {len(train_dataset)} 搴忓垪 | 楠岃瘉锟? {len(val_dataset)} 搴忓垪")
+    logger.info(f"训练集: {len(train_dataset)} 序列 | 验证集: {len(val_dataset)} 序列")
 
     train_loader = DataLoader(
         train_dataset, batch_size=mc.batch_size, shuffle=True,
@@ -663,12 +734,12 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         num_workers=4, persistent_workers=True, prefetch_factor=2, pin_memory=True,
     )
 
-    # ========== 6. 妯″瀷涓庝紭鍖栧櫒 ==========
+    # ========== 6. 模型与优化器 ==========
     actual_lr = mc.learning_rate
     amp_dtype = torch.float16 if device.type == 'cuda' else None
 
     model = StockTransformer(
-        input_dim=len(FEATURES),  # 锟?鍖呭惈鏂板鐨勬敹鐩婄巼鐗瑰緛
+        input_dim=len(FEATURES),  # 包含新增的收益率特征
         lookback_days=mc.lookback_days,
         num_heads=mc.num_heads,
         dim_feedforward=mc.dim_feedforward,
@@ -711,15 +782,15 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         patience=mc.early_stop_patience, min_delta=mc.early_stop_min_delta,
     )
 
-    # 锟?Focal Loss锛堟浛锟?CrossEntropyLoss锟?
+    # 修复: Focal Loss 替代 CrossEntropyLoss
     focal_loss_fn = FocalLoss(
         alpha=class_weights,
         gamma=2.0,
-        label_smoothing=0.05,  # 锟?0.1锟?.05
+        label_smoothing=0.05,  # 0.1→0.05
         reduction='none',
     ).to(device)
 
-    # 鍔犺浇妫€鏌ョ偣
+    # 加载检查点
     focal_loss_fn.label_smoothing = mc.label_smoothing
 
     start_epoch = 0
@@ -745,12 +816,12 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
                 grad_scaler.load_state_dict(checkpoint['scaler_state_dict'])
             start_epoch = checkpoint['epoch']
             best_val_loss = checkpoint.get('loss', float('inf'))
-            logger.warning(f"鎭㈠妫€鏌ョ偣: {latest_checkpoint}, 璧峰鍛ㄦ湡: {start_epoch}, lr 已重置为: {actual_lr}")
+            logger.warning(f"恢复检查点: {latest_checkpoint}, 起始周期: {start_epoch}, lr 已重置为: {actual_lr}")
         else:
             logger.warning(f"Skip incompatible checkpoint: {latest_checkpoint}")
 
-    # ========== 7. 璁粌寰幆 ==========
-    # 锟?鍥炲綊鎹熷け鑷€傚簲鏉冮噸锛氬垵锟?.5锛岄殢璁粌杩涘睍閫愭笎澧炲姞锟?.0
+    # ========== 7. 训练循环 ==========
+    # 回归损失自适应权重：初始 0.1，随训练进展逐渐增加到 0.3
     ret_loss_weight_initial = 0.1
     ret_loss_weight_final = 0.3
 
@@ -785,7 +856,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
                 if torch.isnan(ret_pred).any() or torch.isinf(ret_pred).any():
                     continue
 
-                # 锟?Focal Loss 鏇夸唬 CrossEntropy
+                # Focal Loss 替代 CrossEntropy
                 loss_cls = focal_loss_fn(logits, labels, sample_weights=weights)
                 loss_cls = loss_cls.mean()
 
@@ -794,7 +865,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
                 loss_ret = nn.SmoothL1Loss(reduction='none')(ret_pred.squeeze(), rets_norm.squeeze())
                 loss_ret = (loss_ret * weights).mean()
 
-                # 锟?鍥炲綊鎹熷け鏉冮噸鑷€傚簲澧炲姞
+                # 回归损失权重自适应增加
                 progress = min(1.0, epoch / max(mc.epochs - 1, 1))
                 ret_loss_weight = ret_loss_weight_initial + (ret_loss_weight_final - ret_loss_weight_initial) * progress
 
@@ -842,67 +913,49 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         scheduler.step()
 
         # ★ 新修复A: online/EMA 双验证 val_loss
-        model.eval()
-        val_loss = 0
-        val_cls_loss = 0
-        val_ret_loss = 0
-        n_val_batches = 0
-        with torch.no_grad():
-            for seq, lab, val_rets, val_weights in tqdm(val_loader, desc="Validating(online)", leave=False):
-                seq = seq.to(device, non_blocking=True)
-                lab = lab.to(device, non_blocking=True)
-                val_rets = val_rets.to(device, non_blocking=True)
-                val_weights = val_weights.to(device, non_blocking=True)
-
-                if torch.isnan(seq).any() or torch.isinf(seq).any():
-                    continue
-
-                with autocast(device_type="cuda", dtype=torch.float16):
-                    logits, ret_pred = model(seq)
-                    if torch.isnan(logits).any() or torch.isinf(logits).any():
-                        continue
-
-                    loss_cls = focal_loss_fn(logits, lab, sample_weights=val_weights)
-                    loss_cls = loss_cls.mean()
-                    val_rets_norm = val_rets / mc.ret_target_scale
-                    loss_ret = nn.SmoothL1Loss(reduction="none")(ret_pred.squeeze(), val_rets_norm.squeeze())
-                    loss_ret = (loss_ret * val_weights).mean()
-                    loss = loss_cls + ret_loss_weight * loss_ret
-                    val_loss += loss.item()
-                    val_cls_loss += loss_cls.item()
-                    val_ret_loss += loss_ret.item()
-                    n_val_batches += 1
-
-        if n_val_batches > 0:
-            online_val_loss = val_loss / n_val_batches
-            online_val_cls = val_cls_loss / n_val_batches
-            online_val_ret = val_ret_loss / n_val_batches
-        else:
-            online_val_loss = online_val_cls = online_val_ret = float("inf")
-
+        # Use _compute_epoch_metrics for full metrics
         avg_train_loss = total_loss / len(train_loader)
 
         if epoch >= swa_start:
             swa_model.update_parameters(model)
 
-        avg_val_loss, avg_val_cls, avg_val_ret = evaluate_model(
-            ema.get_model(),
-            val_loader,
-            device,
-            focal_loss_fn,
-            ret_loss_weight,
-            amp_dtype,
-            ret_scale=mc.ret_target_scale,
+        # Online model val metrics
+        online_metrics = _compute_epoch_metrics(
+            model, val_loader, device, focal_loss_fn, ret_loss_weight,
+            amp_dtype, ret_scale=mc.ret_target_scale, prefix="val_online",
+        )
+
+        # EMA model val metrics
+        ema_metrics = _compute_epoch_metrics(
+            ema.get_model(), val_loader, device, focal_loss_fn, ret_loss_weight,
+            amp_dtype, ret_scale=mc.ret_target_scale, prefix="val_ema",
         )
 
         current_lr = optimizer.param_groups[0]["lr"]
+
+        # Full log: loss + classification + regression metrics
         logger.warning(
             f"Epoch {epoch + 1}, "
             f"Train: {avg_train_loss:.4f}, "
-            f"Val[online]: {online_val_loss:.4f} (cls: {online_val_cls:.4f}, ret: {online_val_ret:.4f}), "
-            f"Val[EMA]: {avg_val_loss:.4f} (cls: {avg_val_cls:.4f}, ret: {avg_val_ret:.4f}), "
+            f"Val[online]: loss={online_metrics['val_online_loss']:.4f} "
+            f"cls_acc={online_metrics['val_online_cls_acc']:.3f} "
+            f"macro_f1={online_metrics['val_online_macro_f1']:.3f} "
+            f"up_prec={online_metrics['val_online_up_precision']:.3f} "
+            f"dn_prec={online_metrics['val_online_down_precision']:.3f} "
+            f"ret_mae={online_metrics['val_online_ret_mae']:.5f} "
+            f"ret_ic={online_metrics['val_online_ret_ic']:.4f}, "
+            f"Val[EMA]: loss={ema_metrics['val_ema_loss']:.4f} "
+            f"cls_acc={ema_metrics['val_ema_cls_acc']:.3f} "
+            f"macro_f1={ema_metrics['val_ema_macro_f1']:.3f} "
+            f"up_prec={ema_metrics['val_ema_up_precision']:.3f} "
+            f"dn_prec={ema_metrics['val_ema_down_precision']:.3f} "
+            f"ret_mae={ema_metrics['val_ema_ret_mae']:.5f} "
+            f"ret_ic={ema_metrics['val_ema_ret_ic']:.4f}, "
             f"LR: {current_lr:.2e}, ret_w: {ret_loss_weight:.2f}"
         )
+
+        # Use EMA val_loss for model selection
+        avg_val_loss = ema_metrics['val_ema_loss']
 
         checkpoint_path = f"model_epoch_{epoch + 1}.pth"
         torch.save({
@@ -915,7 +968,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             'target_source': 'raw_close',
         }, checkpoint_path)
 
-        # 淇濆瓨鏈€浣虫ā鍨嬶紙EMA锟?
+        # 保存最佳模型（EMA）
         if avg_val_loss <= best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(ema.get_model().state_dict(), pc.model_path)
@@ -935,11 +988,11 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             logger.error("Validation loss became NaN/Inf, stopping training")
             break
 
-    # ========== SWA 鏀跺熬 ==========
+    # ========== SWA 收尾 ==========
     # ★ 修复1: 只有 SWA 实际累积了多个 epoch 才有意义；用 n_averaged 判断
     swa_n = int(swa_model.n_averaged.item()) if hasattr(swa_model, 'n_averaged') else 0
     if swa_n >= 3:
-        logger.info(f"SWA 鏀跺熬... (累积 {swa_n} 个 epoch)")
+        logger.info(f"SWA 收尾... (累积 {swa_n} 个 epoch)")
         update_bn(train_loader, swa_model, device=device)
         torch.save(swa_model.state_dict(), pc.swa_model_path)
         logger.warning(f"SWA model saved: {pc.swa_model_path}")

@@ -16,7 +16,7 @@ from typing import Optional, Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
-from backtest.optimizer import calculate_dynamic_weights
+from backtest.optimizer import calculate_dynamic_weights, build_factor_weights
 from data.types import get_limit_ratio, NON_FACTOR_COLS
 from data.regime import get_market_regime_enhanced, RegimeInfo
 from risk_manager import RiskManager
@@ -96,6 +96,18 @@ def calculate_multi_timeframe_score(df: pd.DataFrame, weights: Optional[Dict[str
 
     df['Combined_Score'] = score
     return df
+
+
+def _compute_row_score(df: pd.DataFrame, idx: int, weights: Dict[str, float]) -> float:
+    score = 0.5
+    for factor, weight in weights.items():
+        if factor not in df.columns or weight == 0:
+            continue
+        factor_value = df[factor].iloc[idx]
+        if pd.isna(factor_value):
+            continue
+        score += (float(factor_value) - 0.5) * 2 * weight
+    return float(score)
 
 
 def _check_volume_divergence(df: pd.DataFrame, idx: int, lookback: int = 10) -> bool:
@@ -246,8 +258,6 @@ def run_backtest_loop(
                 last_weight_update = i
                 df = calculate_multi_timeframe_score(df, weights=current_weights)
 
-        score = df['Combined_Score'].iloc[i]
-
         # 增强版市场状态判断
         if regime is None:
             regime_info = get_market_regime_enhanced(market_data, date)
@@ -262,6 +272,12 @@ def run_backtest_loop(
             }.get(regime, 0.5)
 
         p = params.get(curr_regime, params.get('neutral', params))
+        effective_weights = build_factor_weights(
+            df=df,
+            base_weights=current_weights,
+            transformer_weight=p.get('transformer_weight', 0.0),
+        )
+        score = _compute_row_score(df, i, effective_weights)
 
         # ========== 买入逻辑 ==========
         if position == 0 and score > p.get('buy_threshold', 0.6):

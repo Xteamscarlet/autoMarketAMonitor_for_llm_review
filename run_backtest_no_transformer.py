@@ -74,6 +74,88 @@ def _build_benchmark_returns(market_data: pd.DataFrame, df: pd.DataFrame):
     return None
 
 
+
+
+def validate_data_for_backtest(df: pd.DataFrame, stock_code: str, min_days: int = 60) -> tuple:
+    """Verify backtest data quality (pass/fail, issue list)"""
+    issues = []
+    if df is None or len(df) == 0:
+        issues.append("data is empty")
+        return False, issues
+    if len(df) < min_days:
+        issues.append(f"insufficient data {len(df)} < {min_days}")
+    required_cols = ['Open', 'High', 'Low', 'Close', 'Volume']
+    missing = [col for col in required_cols if col not in df.columns]
+    if missing:
+        issues.append(f"missing cols: {missing}")
+    for col in required_cols:
+        if col in df.columns:
+            nan_ratio = df[col].isna().sum() / len(df)
+            if nan_ratio > 0.1:
+                issues.append(f"{col} high NaN ratio {nan_ratio:.1%}")
+    if 'Close' in df.columns:
+        invalid = (df['Close'] <= 0).sum()
+        if invalid > 0:
+            issues.append(f"{invalid} invalid prices")
+    return len(issues) == 0, issues
+
+
+def filter_strategies_with_fallback(
+        strategies: list,
+        risk_manager: RiskManager,
+        min_trades: int = 5,
+        min_sharpe: float = 0.0,
+        max_drawdown: float = -20.0,
+) -> tuple:
+    """Strategy filter with graceful fallback (strict -> loose -> last resort)"""
+    filter_log = []
+    passed = []
+
+    # Strict filter
+    for s in strategies:
+        stats = s.get("stats", {})
+        issues = []
+        if stats.get("total_trades", 0) < min_trades:
+            issues.append(f"trades {stats.get('total_trades', 0)} < {min_trades}")
+        if stats.get("sharpe_ratio", 0) < min_sharpe:
+            issues.append(f"sharpe {stats.get('sharpe_ratio', 0):.4f} < {min_sharpe}")
+        if stats.get("max_drawdown", 0) < max_drawdown:
+            issues.append(f"drawdown {stats.get('max_drawdown', 0):.2f}% < {max_drawdown}%")
+        if len(issues) == 0:
+            passed.append(s)
+            filter_log.append(f"PASS {s.get('code', 'unknown')}: strict pass")
+        else:
+            filter_log.append(f"REJECT {s.get('code', 'unknown')}: failed - {', '.join(issues)}")
+
+    if len(passed) > 0:
+        return passed, filter_log
+
+    # Loose filter: lower trade count threshold
+    filter_log.append("No strict passes, trying loose filter...")
+    min_trades_fallback = max(1, min_trades // 2)
+    for s in strategies:
+        stats = s.get("stats", {})
+        if stats.get("total_trades", 0) >= min_trades_fallback:
+            passed.append(s)
+            filter_log.append(f"PASS {s.get('code', 'unknown')}: loose pass trades >= {min_trades_fallback}")
+
+    if len(passed) > 0:
+        return passed, filter_log
+
+    # Last resort: any strategy with trades
+    filter_log.append("No loose passes, trying last resort...")
+    for s in strategies:
+        stats = s.get("stats", {})
+        if stats.get("total_trades", 0) > 0:
+            passed.append(s)
+            filter_log.append(f"PASS {s.get('code', 'unknown')}: last resort (has trades)")
+
+    if len(passed) == 0:
+        filter_log.append("All strategies have zero trades")
+
+    return passed, filter_log
+
+
 def process_single_stock_no_transformer(args):
     """ 子进程处理单只股票的完整流程（无Transformer版本）：
     1. 因子计算（仅传统因子）

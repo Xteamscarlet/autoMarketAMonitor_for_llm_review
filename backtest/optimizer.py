@@ -275,14 +275,8 @@ def optimize_strategy(
         if trial_params['buy_threshold'] <= trial_params['sell_threshold']:
             return -999.0, -1.0, -999.0
 
-        adjusted_weights = build_factor_weights(
-            df=df,
-            base_weights=weights,
-            transformer_weight=trial_params['transformer_weight'],
-        )
-
         trades_df, stats, _ = run_backtest_loop(
-            df, stock_code, market_data, adjusted_weights,
+            df, stock_code, market_data, weights,
             {regime: trial_params}, regime, stocks_data=stocks_data,
         )
 
@@ -339,3 +333,210 @@ def optimize_strategy(
             }
 
     return best_params_map, weights
+
+
+def optimize_and_validate(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    stock_code: str,
+    market_data: Optional[pd.DataFrame],
+    stocks_data: Optional[Dict],
+    n_trials: Optional[int] = None,
+    patience: int = 3,
+    min_improvement: float = 0.01,
+) -> Tuple[Dict[str, dict], Dict[str, float]]:
+    """????????train ?? ? val ?? ? ??????
+
+    Phase 1 (Train): Optuna ?? train_df ???????? Pareto ?????
+    Phase 2 (Val):   ? val_df ??????????? val_selection_metric ???
+    Phase 3:         ?? val ?????? val_early_stop_threshold???????
+    """
+    from backtest.engine import run_backtest_loop
+    from data.indicators import calculate_orthogonal_factors
+
+    settings = get_settings()
+    if n_trials is None:
+        n_trials = max(10, settings.backtest.n_optuna_trials)
+
+    train_copy = train_df.copy()
+    val_copy = val_df.copy()
+
+    if 'transformer_prob' not in train_copy.columns or 'mom_10' not in train_copy.columns:
+        print(f"  [???] {stock_code} train ???????????...")
+        train_copy = calculate_orthogonal_factors(train_copy, stock_code)
+
+    if 'transformer_prob' not in val_copy.columns or 'mom_10' not in val_copy.columns:
+        print(f"  [???] {stock_code} val ???????????...")
+        val_copy = calculate_orthogonal_factors(val_copy, stock_code)
+
+    factor_cols = [col for col in train_copy.columns if col in TRADITIONAL_FACTOR_COLS]
+    base_weights = calculate_dynamic_weights(train_copy, factor_cols)
+
+    val_selection_metric = getattr(settings.backtest, 'val_selection_metric', 'sortino')
+
+    # ========== Phase 1: ? train ?? Optuna ???? ==========
+    def _train_objective(trial, regime):
+        """?? train ????????return, -max_drawdown, sortino"""
+        trial_params = {
+            'buy_threshold': trial.suggest_float('buy_threshold', 0.45, 0.75, step=0.025),
+            'sell_threshold': trial.suggest_float('sell_threshold', -0.45, 0.05, step=0.025),
+            'hold_days': trial.suggest_int('hold_days', 5, 30, step=3),
+            'stop_loss': trial.suggest_float('stop_loss', -0.12, -0.03, step=0.005),
+            'trailing_profit_level1': trial.suggest_float('trailing_profit_level1', 0.03, 0.10, step=0.005),
+            'trailing_profit_level2': trial.suggest_float('trailing_profit_level2', 0.08, 0.20, step=0.01),
+            'trailing_drawdown_level1': trial.suggest_float('trailing_drawdown_level1', 0.03, 0.12, step=0.005),
+            'trailing_drawdown_level2': trial.suggest_float('trailing_drawdown_level2', 0.02, 0.06, step=0.005),
+            'take_profit_multiplier': trial.suggest_float('take_profit_multiplier', 1.5, 5.0, step=0.25),
+            'transformer_weight': trial.suggest_float('transformer_weight', 0.0, 0.6, step=0.05),
+            'transformer_buy_threshold': trial.suggest_float('transformer_buy_threshold', 0.50, 0.85, step=0.025),
+            'transformer_sell_threshold': trial.suggest_float('transformer_sell_threshold', 0.15, 0.45, step=0.025),
+            'confidence_threshold': trial.suggest_float('confidence_threshold', 0.3, 0.7, step=0.025),
+        }
+
+        if trial_params['buy_threshold'] <= trial_params['sell_threshold']:
+            return -999.0, -999.0, -999.0
+
+        trades_train, stats_train, _ = run_backtest_loop(
+            train_copy, stock_code, market_data, base_weights,
+            {regime: trial_params}, regime, stocks_data=stocks_data,
+        )
+
+        if stats_train is None or trades_train is None or len(trades_train) == 0:
+            return -999.0, -999.0, -999.0
+
+        train_ret = stats_train['total_return']
+        train_sortino = _calc_sortino(trades_train['net_return'])
+
+        # ??????? max_drawdown
+        cum_ret = (1 + trades_train['net_return']).cumprod()
+        mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
+
+        return float(train_ret), float(-mdd), float(train_sortino)
+
+    def _calc_sortino(returns: pd.Series) -> float:
+        downside = returns[returns < 0]
+        if len(downside) < 2:
+            return 0.0
+        downside_std = downside.std()
+        if downside_std < 1e-9:
+            return 0.0
+        return returns.mean() / downside_std * np.sqrt(252)
+
+    def _evaluate_on_val(params: dict, regime: str) -> Optional[Dict[str, float]]:
+        """? val_df ?????????? val ????"""
+        trades_val, stats_val, _ = run_backtest_loop(
+            val_copy, stock_code, market_data, base_weights,
+            {regime: params}, regime, stocks_data=stocks_data,
+        )
+
+        if stats_val is None or trades_val is None or len(trades_val) == 0:
+            return None
+
+        val_ret = stats_val['total_return']
+        val_sortino = _calc_sortino(trades_val['net_return'])
+
+        cum_ret = (1 + trades_val['net_return']).cumprod()
+        val_mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
+        val_sharpe = (trades_val['net_return'].mean() / (trades_val['net_return'].std() + 1e-6)) * np.sqrt(252)
+
+        return {
+            'val_return': float(val_ret),
+            'val_sortino': float(val_sortino),
+            'val_mdd': float(val_mdd),
+            'val_sharpe': float(val_sharpe),
+        }
+
+    # ?????val ??????
+    DEFAULT_PARAMS = {
+        'buy_threshold': 0.6, 'sell_threshold': -0.2, 'hold_days': 15,
+        'stop_loss': -0.08, 'trailing_profit_level1': 0.06,
+        'trailing_profit_level2': 0.12, 'trailing_drawdown_level1': 0.08,
+        'trailing_drawdown_level2': 0.04, 'take_profit_multiplier': 3.0,
+        'transformer_weight': 0.2, 'transformer_buy_threshold': 0.65,
+        'transformer_sell_threshold': 0.3, 'confidence_threshold': 0.5,
+    }
+
+    extended_regimes = ['strong_bull', 'bull', 'neutral', 'weak', 'bear']
+    best_params_map = {}
+    val_summary = {}  # ???? regime ? val ??
+
+    for regime in extended_regimes:
+        # ---- Phase 1: Train ?? ----
+        study = optuna.create_study(
+            directions=["maximize", "maximize", "maximize"],
+            sampler=optuna.samplers.NSGAIISampler(seed=42),
+            pruner=optuna.pruners.MedianPruner(),
+        )
+        study.optimize(lambda t: _train_objective(t, regime), n_trials=n_trials, show_progress_bar=False)
+
+        # ---- Phase 2: Val ?? ----
+        if len(study.best_trials) > 0:
+            # ? Pareto ??????????
+            candidates = []
+            for trial in study.best_trials:
+                candidates.append(trial.params)
+
+            # ????????? top-3?? train sortino ??????????
+            all_trials_sorted = sorted(study.trials, key=lambda t: t.values[2] if t.state == optuna.trial.TrialState.COMPLETE else -999, reverse=True)
+            for t in all_trials_sorted[:3]:
+                if t.params not in candidates:
+                    candidates.append(t.params)
+
+            # ? val ?????
+            best_val_score = -np.inf
+            best_val_params = None
+            best_val_metrics = None
+
+            for params in candidates:
+                val_metrics = _evaluate_on_val(params, regime)
+                if val_metrics is None:
+                    continue
+
+                # ?? val ????
+                if val_selection_metric == 'sortino':
+                    score = val_metrics['val_sortino']
+                elif val_selection_metric == 'sharpe':
+                    score = val_metrics['val_sharpe']
+                elif val_selection_metric == 'return':
+                    score = val_metrics['val_return']
+                elif val_selection_metric == 'calmar':
+                    # calmar = return / |mdd|
+                    score = val_metrics['val_return'] / (abs(val_metrics['val_mdd']) + 1e-6)
+                else:
+                    score = val_metrics['val_sortino']
+
+                if score > best_val_score:
+                    best_val_score = score
+                    best_val_params = params
+                    best_val_metrics = val_metrics
+
+            if best_val_params is not None and best_val_metrics is not None:
+                # ?? val ?????????
+                if best_val_metrics['val_return'] < settings.backtest.val_early_stop_threshold:
+                    print(f"  [???-Val] {stock_code} regime={regime} val_ret={best_val_metrics['val_return']:.2f}% < threshold={settings.backtest.val_early_stop_threshold}%, ??????")
+                    best_params_map[regime] = DEFAULT_PARAMS.copy()
+                    val_summary[regime] = {'status': 'fallback', **best_val_metrics}
+                else:
+                    print(f"  [???-Val] {stock_code} regime={regime} val_ret={best_val_metrics['val_return']:.2f}% val_sortino={best_val_metrics['val_sortino']:.2f} ? ??")
+                    best_params_map[regime] = best_val_params
+                    val_summary[regime] = {'status': 'selected', **best_val_metrics}
+            else:
+                print(f"  [???-Val] {stock_code} regime={regime} val ???????????????")
+                best_params_map[regime] = DEFAULT_PARAMS.copy()
+                val_summary[regime] = {'status': 'all_failed'}
+        else:
+            print(f"  [???-Train] {stock_code} regime={regime} Optuna ??? trial???????")
+            best_params_map[regime] = DEFAULT_PARAMS.copy()
+            val_summary[regime] = {'status': 'no_trials'}
+
+    # ?? val ????
+    print(f"\n  [???] {stock_code} Val ???? (metric={val_selection_metric}):")
+    for regime, info in val_summary.items():
+        status = info['status']
+        if status in ('selected', 'fallback'):
+            print(f"    {regime:<14} status={status} val_ret={info.get('val_return', 'N/A'):>7.2f}% "
+                  f"val_sortino={info.get('val_sortino', 'N/A'):>6.2f} val_mdd={info.get('val_mdd', 'N/A'):>6.2f}%")
+        else:
+            print(f"    {regime:<14} status={status}")
+
+    return best_params_map, base_weights

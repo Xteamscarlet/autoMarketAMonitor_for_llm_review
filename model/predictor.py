@@ -40,6 +40,19 @@ except ImportError:
 _MODEL_CACHE: Dict[str, List[tuple]] = {}
 
 
+def _build_model(device: torch.device) -> StockTransformer:
+    settings = get_settings()
+    return StockTransformer(
+        input_dim=len(FEATURES),
+        lookback_days=settings.model.lookback_days,
+        num_heads=settings.model.num_heads,
+        dim_feedforward=settings.model.dim_feedforward,
+        num_layers=settings.model.num_layers,
+        num_classes=settings.model.num_classes,
+        dropout=settings.model.dropout,
+    ).to(device)
+
+
 def _load_ensemble_models(device: torch.device) -> List[tuple]:
     """动态加载所有可用模型（带进程内缓存）"""
     cache_key = str(device)
@@ -51,7 +64,7 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
 
     if os.path.exists(settings.paths.model_path):
         try:
-            m = StockTransformer(input_dim=len(FEATURES), lookback_days=settings.model.lookback_days).to(device)
+            m = _build_model(device)
             m.load_state_dict(torch.load(settings.paths.model_path, map_location=device))
             m.eval()
             models.append(("EMA", m))
@@ -60,7 +73,7 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
 
     if os.path.exists(settings.paths.swa_model_path):
         try:
-            m = StockTransformer(input_dim=len(FEATURES), lookback_days=settings.model.lookback_days).to(device)
+            m = _build_model(device)
             swa_state = torch.load(settings.paths.swa_model_path, map_location=device)
             clean_state = {k.replace('module.', ''): v for k, v in swa_state.items() if k != 'n_averaged'}
             m.load_state_dict(clean_state)
@@ -71,10 +84,10 @@ def _load_ensemble_models(device: torch.device) -> List[tuple]:
 
     topk_dir = settings.paths.topk_checkpoint_dir
     if os.path.exists(topk_dir):
-        for fname in os.listdir(topk_dir):
+        for fname in sorted(os.listdir(topk_dir)):
             if fname.startswith("topk_rawclose_") and fname.endswith(".pth"):
                 try:
-                    m = StockTransformer(input_dim=len(FEATURES), lookback_days=settings.model.lookback_days).to(device)
+                    m = _build_model(device)
                     ckpt = torch.load(os.path.join(topk_dir, fname), map_location=device)
                     clean_ckpt = {k.replace('module.', ''): v for k, v in ckpt.items() if k != 'n_averaged'}
                     m.load_state_dict(clean_ckpt)
@@ -142,15 +155,18 @@ def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
 
 def _select_scaler(code: str, scalers: dict, global_scaler, features_data: np.ndarray):
     if code in scalers:
-        return scalers[code].transform(features_data), "专用"
+        scaled = scalers[code].transform(features_data)
+        return np.clip(scaled, -5, 5), "专用"
     elif global_scaler is not None:
-        return global_scaler.transform(features_data), "全局"
+        scaled = global_scaler.transform(features_data)
+        return np.clip(scaled, -5, 5), "全局"
     else:
         median = np.median(features_data, axis=0)
         q75 = np.percentile(features_data, 75, axis=0)
         q25 = np.percentile(features_data, 25, axis=0)
         iqr = np.clip(q75 - q25, 1e-6, None)
-        return (features_data - median) / iqr, "在线标准化"
+        scaled = (features_data - median) / iqr
+        return np.clip(scaled, -5, 5), "在线标准化"
 
 
 def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd.DataFrame:

@@ -54,8 +54,10 @@ class EfficientAttention(nn.Module):
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
 
+        # SDPA dropout 需要显式跟随 train/eval，不能在 eval 时固定非 0。
+        dropout_p = 0.1 if self.training else 0.0
         attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q, k, v, dropout_p=0.1, is_causal=False
+            q, k, v, dropout_p=dropout_p, is_causal=False
         )
         attn_output = self.attn_dropout(attn_output)
         attn_output = attn_output.transpose(1, 2).reshape(B, N, C)
