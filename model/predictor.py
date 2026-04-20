@@ -175,7 +175,7 @@ def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd
             if not _EF_AVAILABLE:
                 continue
 
-            time.sleep(1)
+            time.sleep(10)
             if i > 0 and i % 100 == 0:
                 logger.warning('每100只暂停100秒')
                 time.sleep(100)

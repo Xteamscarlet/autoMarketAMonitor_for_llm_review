@@ -450,14 +450,16 @@ class WeightedMultiStockDatasetV2(MultiStockDatasetV2):
         sequence = self.data_array[start_idx:start_idx + self.lookback_days]
         weight = self.weights_array[start_idx + self.lookback_days]
 
-        # 锟?娓╁拰鏁版嵁澧炲己 (★ 修复1: 加强增强抑制过拟合)
-        if self.augment and np.random.rand() < 0.6:  # 0.4 → 0.6
-            scale = np.random.uniform(0.88, 1.12)  # 0.92~1.08 → 0.88~1.12
+        # ★ 新修复D: augment 强度回调到中等水平
+        # 上次 0.6 概率 + scale [0.88,1.12] 太激进，train loss 反向上升
+        # 现在调回 0.45 + [0.92, 1.08] + noise 0.015 + mask 0.2
+        if self.augment and np.random.rand() < 0.45:
+            scale = np.random.uniform(0.92, 1.08)
             sequence = sequence * scale
-            noise = np.random.normal(0, 0.02, sequence.shape)  # 0.015 → 0.02
+            noise = np.random.normal(0, 0.015, sequence.shape)
             sequence = sequence + noise
-            if np.random.rand() < 0.25:  # 0.15 → 0.25
-                mask = np.random.rand(self.lookback_days) > 0.05  # 0.1锟?.05
+            if np.random.rand() < 0.20:
+                mask = np.random.rand(self.lookback_days) > 0.05
                 sequence = sequence * mask[:, np.newaxis]
 
         return (
@@ -510,17 +512,28 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     # 锟?鏂板锛氭敹鐩婄巼鐗瑰緛锛堟彁楂樹俊鍙峰瘑搴︼級
     for lag in [1, 3, 5, 10]:
-        col_name = f'ret_{lag}'
-        combined_df[col_name] = combined_df.groupby('Code')['Close'].pct_change(lag)
-        # 濡傛灉 FEATURES 涓嶅寘鍚繖浜涘垪锛屽悗闈㈡爣鍑嗗寲鏃堕渶瑕佸锟?
+        col_name = f"ret_{lag}"
+        combined_df[col_name] = combined_df.groupby("Code")["Close"].pct_change(lag)
+        # ★ 新修复C: inf -> NaN + clip 到合理范围
+        combined_df[col_name] = combined_df[col_name].replace([np.inf, -np.inf], np.nan)
+        max_ret_limit = 0.3 if lag == 1 else 0.5
+        combined_df[col_name] = combined_df[col_name].clip(-max_ret_limit, max_ret_limit)
         if col_name not in FEATURES:
             FEATURES.append(col_name)
-    
-    # 閲嶆柊鎴柇鏋佺鐗瑰緛鍊硷紙鍖呭惈鏂板姞鐨勬敹鐩婄巼鐗瑰緛锟?
+
+    # ★ 新修复C: 所有特征列 inf -> NaN，防止分位数计算失败
     for col in FEATURES:
         if col in combined_df.columns:
-            q01 = combined_df[col].quantile(0.02)  # 0.01 鈫?0.02
-            q99 = combined_df[col].quantile(0.98)  # 0.99 鈫?0.98
+            combined_df[col] = combined_df[col].replace([np.inf, -np.inf], np.nan)
+
+    # 重新截断特征值
+    for col in FEATURES:
+        if col in combined_df.columns:
+            q01 = combined_df[col].quantile(0.02)
+            q99 = combined_df[col].quantile(0.98)
+            if np.isnan(q01) or np.isnan(q99):
+                logger.warning(f"feature {col} quantile NaN (q01={q01}, q99={q99}), skip clip")
+                continue
             combined_df[col] = combined_df[col].clip(q01, q99)
 
     combined_df = combined_df.dropna(subset=FEATURES)
@@ -595,20 +608,23 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     logger.info("全局 scaler 已保存")
 
     # ========== 4. 鏃堕棿琛板噺鏉冮噸 ==========
+    # ★ 新修复B: train/val 的 time_weight 必须用【同一个 max_date】作为锚点，
+    # 否则 train 的 weight 分布在 [0.1, 1.0]、val 的 weight 集中在 [0.9, 1.0]，
+    # 导致 val_loss 被 time_weight 放大 2~3 倍，train/val 不可比
     if 'Date' in train_df.columns:
         train_df['Date'] = pd.to_datetime(train_df['Date'])
-        max_date = train_df['Date'].max()
-        train_df['days_to_recent'] = (max_date - train_df['Date']).dt.days.clip(lower=0)
-        # 锟?鍑忓皬琛板噺鐜囷細0.001 锟?0.0005锛岃鏇存棭鐨勬暟鎹篃鏈夋洿澶氭潈锟?
+        max_date_anchor = train_df['Date'].max()  # 统一锚点
+        train_df['days_to_recent'] = (max_date_anchor - train_df['Date']).dt.days.clip(lower=0)
         train_df['time_weight'] = np.exp(-mc.time_decay_rate * train_df['days_to_recent'])
         train_df['time_weight'] = train_df['time_weight'].clip(0.1, 1.0).fillna(0.5)
     else:
         train_df['time_weight'] = 1.0
+        max_date_anchor = None
 
-    if 'Date' in val_df.columns:
+    if 'Date' in val_df.columns and max_date_anchor is not None:
         val_df['Date'] = pd.to_datetime(val_df['Date'])
-        max_date_val = val_df['Date'].max()
-        val_df['days_to_recent'] = (max_date_val - val_df['Date']).dt.days.clip(lower=0)
+        # ★ 使用 train 的 max_date_anchor，保证 time_weight 分布与 train 可比
+        val_df['days_to_recent'] = (max_date_anchor - val_df['Date']).dt.days.clip(lower=0)
         val_df['time_weight'] = np.exp(-mc.time_decay_rate * val_df['days_to_recent'])
         val_df['time_weight'] = val_df['time_weight'].clip(0.1, 1.0).fillna(0.5)
     else:
@@ -825,13 +841,14 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         # ★ 修复3: 每个 epoch 结束统一调度一次
         scheduler.step()
 
-        # ========== 楠岃瘉闃舵 ==========
+        # ★ 新修复A: online/EMA 双验证 val_loss
         model.eval()
         val_loss = 0
         val_cls_loss = 0
         val_ret_loss = 0
+        n_val_batches = 0
         with torch.no_grad():
-            for seq, lab, val_rets, val_weights in tqdm(val_loader, desc=f"Validating", leave=False):
+            for seq, lab, val_rets, val_weights in tqdm(val_loader, desc="Validating(online)", leave=False):
                 seq = seq.to(device, non_blocking=True)
                 lab = lab.to(device, non_blocking=True)
                 val_rets = val_rets.to(device, non_blocking=True)
@@ -840,21 +857,28 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
                 if torch.isnan(seq).any() or torch.isinf(seq).any():
                     continue
 
-                with autocast(device_type='cuda', dtype=torch.float16):
+                with autocast(device_type="cuda", dtype=torch.float16):
                     logits, ret_pred = model(seq)
                     if torch.isnan(logits).any() or torch.isinf(logits).any():
                         continue
 
                     loss_cls = focal_loss_fn(logits, lab, sample_weights=val_weights)
                     loss_cls = loss_cls.mean()
-                    # ★ 修复5: rets 标准化保持训练/验证一致
                     val_rets_norm = val_rets / mc.ret_target_scale
-                    loss_ret = nn.SmoothL1Loss(reduction='none')(ret_pred.squeeze(), val_rets_norm.squeeze())
+                    loss_ret = nn.SmoothL1Loss(reduction="none")(ret_pred.squeeze(), val_rets_norm.squeeze())
                     loss_ret = (loss_ret * val_weights).mean()
                     loss = loss_cls + ret_loss_weight * loss_ret
                     val_loss += loss.item()
                     val_cls_loss += loss_cls.item()
                     val_ret_loss += loss_ret.item()
+                    n_val_batches += 1
+
+        if n_val_batches > 0:
+            online_val_loss = val_loss / n_val_batches
+            online_val_cls = val_cls_loss / n_val_batches
+            online_val_ret = val_ret_loss / n_val_batches
+        else:
+            online_val_loss = online_val_cls = online_val_ret = float("inf")
 
         avg_train_loss = total_loss / len(train_loader)
 
@@ -868,18 +892,18 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             focal_loss_fn,
             ret_loss_weight,
             amp_dtype,
-            ret_scale=mc.ret_target_scale,  # ★ 修复5
+            ret_scale=mc.ret_target_scale,
         )
 
-        current_lr = optimizer.param_groups[0]['lr']
+        current_lr = optimizer.param_groups[0]["lr"]
         logger.warning(
             f"Epoch {epoch + 1}, "
-            f"Train: {avg_train_loss:.4f}, Val: {avg_val_loss:.4f} "
-            f"(cls: {avg_val_cls:.4f}, ret: {avg_val_ret:.4f}), "
+            f"Train: {avg_train_loss:.4f}, "
+            f"Val[online]: {online_val_loss:.4f} (cls: {online_val_cls:.4f}, ret: {online_val_ret:.4f}), "
+            f"Val[EMA]: {avg_val_loss:.4f} (cls: {avg_val_cls:.4f}, ret: {avg_val_ret:.4f}), "
             f"LR: {current_lr:.2e}, ret_w: {ret_loss_weight:.2f}"
         )
 
-        # 淇濆瓨妫€鏌ョ偣
         checkpoint_path = f"model_epoch_{epoch + 1}.pth"
         torch.save({
             'epoch': epoch + 1,
