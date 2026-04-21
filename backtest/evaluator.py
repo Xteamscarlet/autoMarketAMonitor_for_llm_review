@@ -12,6 +12,34 @@ import pandas as pd
 from typing import Dict, Tuple, List, Optional
 
 
+def _drawdown_from_curve(curve: pd.Series) -> Tuple[float, float, Optional[float], Optional[float]]:
+    clean_curve = curve.dropna()
+    if clean_curve.empty:
+        return 0.0, 0.0, None, None
+    peak = clean_curve.cummax()
+    dd = (clean_curve - peak) / peak
+    max_dd = dd.min() * 100
+    avg_dd = dd[dd < 0].mean() * 100 if (dd < 0).any() else 0.0
+    in_drawdown = dd < 0
+    if not in_drawdown.any():
+        return max_dd, avg_dd, None, None
+    groups = (~in_drawdown).cumsum()
+    dd_durations = in_drawdown.groupby(groups).sum()
+    max_dd_dur = dd_durations.max() if not dd_durations.empty else 0
+    avg_dd_dur = dd_durations.mean() if not dd_durations.empty else 0
+    return max_dd, avg_dd, max_dd_dur, avg_dd_dur
+
+
+def _series_to_returns(series: pd.Series) -> pd.Series:
+    clean = pd.Series(series).dropna()
+    if clean.empty:
+        return clean
+    is_return_like = (clean.abs() <= 1.5).mean() > 0.95 and clean.abs().median() < 0.2
+    if is_return_like:
+        return clean.astype(float)
+    return clean.astype(float).pct_change().dropna()
+
+
 def calculate_comprehensive_stats(
     trades_df: pd.DataFrame,
     equity_curve: Optional[pd.Series] = None,
@@ -41,9 +69,15 @@ def calculate_comprehensive_stats(
     avg_return = net_returns.mean() * 100
     best_trade = net_returns.max() * 100
     worst_trade = net_returns.min() * 100
-    # ★ M3 修复：用复合收益
-    equity_final = initial_cash * (1 + net_returns).prod()
-    equity_peak = initial_cash * (1 + net_returns.cumsum()).max()
+    # ★ M3 修复：优先使用真实资金曲线；否则退回复合交易收益
+    if equity_curve is not None and len(equity_curve) > 0:
+        clean_equity = equity_curve.dropna()
+        equity_final = clean_equity.iloc[-1] if not clean_equity.empty else initial_cash
+        equity_peak = clean_equity.max() if not clean_equity.empty else initial_cash
+    else:
+        compounded = (1 + net_returns).cumprod()
+        equity_final = initial_cash * compounded.iloc[-1]
+        equity_peak = initial_cash * compounded.max()
 
     # ---- 交易时长 ----
     durations = {}
@@ -83,7 +117,10 @@ def calculate_comprehensive_stats(
         avg_dd_dur = dd_durations.mean() if not dd_durations.empty else 0
         return max_dd, avg_dd, max_dd_dur, avg_dd_dur
 
-    max_drawdown, avg_drawdown, max_dd_duration, avg_dd_duration = _drawdown_stats(net_returns)
+    if equity_curve is not None and len(equity_curve) > 1:
+        max_drawdown, avg_drawdown, max_dd_duration, avg_dd_duration = _drawdown_from_curve(equity_curve)
+    else:
+        max_drawdown, avg_drawdown, max_dd_duration, avg_dd_duration = _drawdown_stats(net_returns)
 
     # ★ M4 修复：基于实际时间跨度年化
     total_days = 252  # 默认1年
@@ -121,13 +158,33 @@ def calculate_comprehensive_stats(
     # Alpha / Beta
     alpha = None
     beta = None
-    if benchmark_curve is not None and len(benchmark_curve) == len(net_returns):
-        bench = benchmark_curve.pct_change().dropna().values
-        strat = net_returns.values
-        covm = np.cov(strat, bench)
-        if covm.shape == (2, 2):
-            beta = float(covm[0, 1] / (covm[1, 1] + 1e-12))
-            alpha = (np.mean(strat) - beta * np.mean(bench)) * ann_factor * 100
+    if benchmark_curve is not None:
+        strat_returns = None
+        if equity_curve is not None and len(equity_curve) > 1:
+            strat_returns = equity_curve.pct_change().dropna()
+        elif len(net_returns) > 0:
+            strat_returns = pd.Series(net_returns.values)
+
+        bench_returns = _series_to_returns(benchmark_curve)
+        if strat_returns is not None and len(strat_returns) > 0 and len(bench_returns) > 0:
+            if hasattr(strat_returns, 'index') and hasattr(bench_returns, 'index'):
+                aligned = pd.concat([strat_returns, bench_returns], axis=1, join='inner').dropna()
+                if len(aligned) >= 2:
+                    strat = aligned.iloc[:, 0].values
+                    bench = aligned.iloc[:, 1].values
+                else:
+                    strat = bench = None
+            elif len(strat_returns) == len(bench_returns):
+                strat = np.asarray(strat_returns)
+                bench = np.asarray(bench_returns)
+            else:
+                strat = bench = None
+
+            if strat is not None and bench is not None:
+                covm = np.cov(strat, bench)
+                if covm.shape == (2, 2):
+                    beta = float(covm[0, 1] / (covm[1, 1] + 1e-12))
+                    alpha = (np.mean(strat) - beta * np.mean(bench)) * ann_factor * 100
 
     # SQN
     sqn = (net_returns.mean() / (net_returns.std() + 1e-12)) * np.sqrt(n_trades)
@@ -139,9 +196,14 @@ def calculate_comprehensive_stats(
 
     # Exposure Time
     exposure_time = None
-    if equity_curve is not None:
-        exposure = (equity_curve != 0).mean() * 100 if equity_curve.dtype in [np.float64, np.int64] else None
-        exposure_time = exposure
+    if 'buy_date' in trades_df.columns and 'sell_date' in trades_df.columns:
+        try:
+            invested_days = ((trades_df['sell_date'] - trades_df['buy_date']).dt.days + 1).clip(lower=0).sum()
+            exposure_time = invested_days / max(total_days, 1) * 100
+        except Exception:
+            exposure_time = None
+    elif equity_curve is not None and len(equity_curve) > 1:
+        exposure_time = equity_curve.pct_change().fillna(0).ne(0).mean() * 100
 
     stats: Dict[str, float] = {
         "total_trades": n_trades,

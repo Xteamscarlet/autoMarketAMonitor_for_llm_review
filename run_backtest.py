@@ -25,7 +25,10 @@ from data import (
 )
 from data.types import NON_FACTOR_COLS
 from backtest.engine import run_backtest_loop, calculate_multi_timeframe_score
-from backtest.optimizer import optimize_strategy, walk_forward_split, calculate_dynamic_weights
+from backtest.optimizer import (
+    optimize_strategy, optimize_and_validate,
+    walk_forward_split, calculate_dynamic_weights,
+)
 from backtest.evaluator import calculate_comprehensive_stats
 from backtest.visualizer import visualize_backtest_with_split
 from backtest.report import print_stock_backtest_report
@@ -143,19 +146,26 @@ def process_single_stock(args):
         best_weights_list = []
         total_commissions = 0.0
 
-        for split in validated_splits:
+        for split_idx, split in enumerate(validated_splits):
             train_start, train_end, val_start, val_end, test_start, test_end = split
 
             train_df = df.iloc[train_start:train_end]
+            val_df = df.iloc[val_start:val_end]
             test_df = df.iloc[test_start:test_end]
 
-            if len(train_df) < 100 or len(test_df) < 20:
+            if len(train_df) < 100 or len(val_df) < 50 or len(test_df) < 20:
                 continue
 
             try:
-                best_params_map, best_weights = optimize_strategy(
-                    train_df, stock_code, _worker_market_data, _worker_stocks_data,
-                )
+                if settings.backtest.enable_val_validation:
+                    best_params_map, best_weights = optimize_and_validate(
+                        train_df, val_df, stock_code,
+                        _worker_market_data, _worker_stocks_data,
+                    )
+                else:
+                    best_params_map, best_weights = optimize_strategy(
+                        train_df, stock_code, _worker_market_data, _worker_stocks_data,
+                    )
             except Exception as e:
                 print(f" [优化失败] {stock_name}: {e}")
                 continue

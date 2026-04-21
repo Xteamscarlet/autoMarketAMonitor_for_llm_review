@@ -146,6 +146,9 @@ class BacktestConfig:
     n_optuna_trials: int = 150
     initial_capital: float = 100000.0
     expanding_window: bool = True   # 使用扩展窗口而非固定窗口
+    val_early_stop_threshold: float = -5.0
+    enable_val_validation: bool = True
+    val_selection_metric: str = "sortino"
 
     @classmethod
     def from_env(cls) -> "BacktestConfig":
@@ -157,6 +160,9 @@ class BacktestConfig:
             n_optuna_trials=_env_int("N_OPTUNA_TRIALS", 150),
             initial_capital=_env_float("INITIAL_CAPITAL", 100000.0),
             expanding_window=_env_bool("EXPANDING_WINDOW", True),
+            val_early_stop_threshold=_env_float("VAL_EARLY_STOP_THRESHOLD", -5.0),
+            enable_val_validation=_env_bool("ENABLE_VAL_VALIDATION", True),
+            val_selection_metric=_env("VAL_SELECTION_METRIC", "sortino"),
         )
 
 
