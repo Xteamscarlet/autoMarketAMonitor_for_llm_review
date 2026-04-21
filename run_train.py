@@ -7,6 +7,7 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
 
 import requests
@@ -26,6 +27,15 @@ def console_print(message: str = "") -> None:
             .replace("❌", "[ERR]")
         )
         print(safe_message)
+
+
+def configure_console_encoding() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 
 
 class ChatLogger(logging.Handler):
@@ -111,6 +121,7 @@ def cleanup_stale_checkpoints(keep_last: int = 0) -> None:
 
 
 def main():
+    configure_console_encoding()
     parser = argparse.ArgumentParser(description="Transformer 模型训练")
     parser.add_argument("--dry-run", action="store_true", help="仅检查环境，不执行训练")
     parser.add_argument("--notify", action="store_true", help="训练完成后发送企业微信通知")
