@@ -26,9 +26,53 @@ logger = logging.getLogger(__name__)
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
+def _pick_return_series(trades_df: pd.DataFrame) -> pd.Series:
+    if trades_df is None or len(trades_df) == 0:
+        return pd.Series(dtype=float)
+    if 'account_return' in trades_df.columns:
+        return trades_df['account_return'].astype(float)
+    return trades_df['net_return'].astype(float)
+
+
+def _estimate_trades_per_year(trades_df: pd.DataFrame, fallback: float = 252.0) -> float:
+    """Estimate annualization frequency from trade timestamps."""
+    if trades_df is None or len(trades_df) == 0:
+        return float(fallback)
+
+    if {'buy_date', 'sell_date'}.issubset(trades_df.columns):
+        buy_dates = pd.to_datetime(trades_df['buy_date'], errors='coerce')
+        sell_dates = pd.to_datetime(trades_df['sell_date'], errors='coerce')
+        start = buy_dates.min()
+        end = sell_dates.max()
+        if pd.notna(start) and pd.notna(end):
+            span_days = (end - start).days
+            if span_days >= 30:
+                est = len(trades_df) * 365.25 / max(span_days, 1)
+                return float(max(est, 1.0))
+
+    return float(fallback)
+
+
+def _safe_spearman(x: np.ndarray, y: np.ndarray) -> float:
+    """Return NaN instead of warning when either input is constant or invalid."""
+    x_arr = np.asarray(x, dtype=float)
+    y_arr = np.asarray(y, dtype=float)
+
+    if x_arr.size < 2 or y_arr.size < 2 or x_arr.size != y_arr.size:
+        return np.nan
+    if np.isnan(x_arr).any() or np.isnan(y_arr).any():
+        return np.nan
+    if np.allclose(x_arr, x_arr[0]) or np.allclose(y_arr, y_arr[0]):
+        return np.nan
+
+    rho, _ = spearmanr(x_arr, y_arr)
+    return float(rho) if not np.isnan(rho) else np.nan
+
+
 def calculate_dynamic_weights(df: pd.DataFrame, factor_cols: list, ic_window_range=(20, 120), use_ewma=True) -> Dict[str, float]:
     """基于 IC/ICIR 的动态权重计算（保持不变）"""
-    target = df['Close'].pct_change(5).rename('target_return')
+    # Use forward return to measure predictive IC (t -> t+5), not historical return.
+    target = (df['Close'].shift(-5) / df['Close'] - 1.0).rename('target_return')
     icir_dict = {}
 
     for col in factor_cols:
@@ -40,8 +84,11 @@ def calculate_dynamic_weights(df: pd.DataFrame, factor_cols: list, ic_window_ran
 
         if use_ewma:
             ic_series = pair_df[col].rolling(window=ic_window_range[1]).apply(
-                lambda x: spearmanr(x, pair_df.loc[x.index, 'target_return'])[0]
+                lambda x: _safe_spearman(x, pair_df.loc[x.index, 'target_return'].to_numpy())
             )
+            ic_series = ic_series.replace([np.inf, -np.inf], np.nan).dropna()
+            if ic_series.empty:
+                continue
             ewma_ic = ic_series.ewm(alpha=0.05).mean()
             mean_ic = ewma_ic.iloc[-1]
             std_ic = ewma_ic.std()
@@ -59,7 +106,7 @@ def calculate_dynamic_weights(df: pd.DataFrame, factor_cols: list, ic_window_ran
             windows = sliding_window_view(vals, window_shape=window, axis=0)
             ic_list = []
             for w in windows:
-                rho, _ = spearmanr(w[:, 0], w[:, 1])
+                rho = _safe_spearman(w[:, 0], w[:, 1])
                 ic_list.append(rho)
             clean_ic = [x for x in ic_list if not np.isnan(x)]
             if not clean_ic:
@@ -259,7 +306,7 @@ def optimize_strategy(
         trial_params = {
             'buy_threshold': trial.suggest_float('buy_threshold', 0.45, 0.75, step=0.025),
             'sell_threshold': trial.suggest_float('sell_threshold', -0.45, 0.05, step=0.025),
-            'hold_days': trial.suggest_int('hold_days', 5, 30, step=3),
+            'hold_days': trial.suggest_int('hold_days', 5, 29, step=3),
             'stop_loss': trial.suggest_float('stop_loss', -0.12, -0.03, step=0.005),
             'trailing_profit_level1': trial.suggest_float('trailing_profit_level1', 0.03, 0.10, step=0.005),
             'trailing_profit_level2': trial.suggest_float('trailing_profit_level2', 0.08, 0.20, step=0.01),
@@ -275,25 +322,37 @@ def optimize_strategy(
         if trial_params['buy_threshold'] <= trial_params['sell_threshold']:
             return -999.0, -1.0, -999.0
 
+        adjusted_weights = build_factor_weights(
+            df=df,
+            base_weights=weights,
+            transformer_weight=trial_params['transformer_weight'],
+        )
+
         trades_df, stats, _ = run_backtest_loop(
-            df, stock_code, market_data, weights,
-            {regime: trial_params}, regime, stocks_data=stocks_data,
+            df, stock_code, market_data, adjusted_weights,
+            {regime: trial_params}, regime,
+            stocks_data=stocks_data,
+            initial_capital=settings.backtest.initial_capital,
         )
 
         if stats is None or trades_df is None or len(trades_df) == 0:
             return -999.0, -1.0, -999.0
 
         ret = stats['total_return']
-        cum_ret = (1 + trades_df['net_return']).cumprod()
+        return_series = _pick_return_series(trades_df)
+        if return_series.empty:
+            return -999.0, -1.0, -999.0
+        cum_ret = (1 + return_series).cumprod()
         mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
-        sharpe = (trades_df['net_return'].mean() / (trades_df['net_return'].std() + 1e-6)) * np.sqrt(252)
+        ann_factor = np.sqrt(_estimate_trades_per_year(trades_df))
+        sharpe = (return_series.mean() / (return_series.std() + 1e-6)) * ann_factor
 
         # ★ Sortino 作为第三目标
-        downside = trades_df['net_return'][trades_df['net_return'] < 0]
+        downside = return_series[return_series < 0]
         downside_std = downside.std() if len(downside) > 1 else 1e-6
-        sortino = (trades_df['net_return'].mean() / (downside_std + 1e-6)) * np.sqrt(252)
+        sortino = (return_series.mean() / (downside_std + 1e-6)) * ann_factor
 
-        win_rate = (trades_df['net_return'] > 0).mean()
+        win_rate = (return_series > 0).mean()
         penalty = 0.0
         if win_rate < 0.35:
             penalty = -0.5
@@ -362,11 +421,11 @@ def optimize_and_validate(
     val_copy = val_df.copy()
 
     if 'transformer_prob' not in train_copy.columns or 'mom_10' not in train_copy.columns:
-        print(f"  [???] {stock_code} train ???????????...")
+        print(f"  [VAL-Prep] {stock_code} train set missing factors, recalculating...")
         train_copy = calculate_orthogonal_factors(train_copy, stock_code)
 
     if 'transformer_prob' not in val_copy.columns or 'mom_10' not in val_copy.columns:
-        print(f"  [???] {stock_code} val ???????????...")
+        print(f"  [VAL-Prep] {stock_code} validation set missing factors, recalculating...")
         val_copy = calculate_orthogonal_factors(val_copy, stock_code)
 
     factor_cols = [col for col in train_copy.columns if col in TRADITIONAL_FACTOR_COLS]
@@ -380,7 +439,7 @@ def optimize_and_validate(
         trial_params = {
             'buy_threshold': trial.suggest_float('buy_threshold', 0.45, 0.75, step=0.025),
             'sell_threshold': trial.suggest_float('sell_threshold', -0.45, 0.05, step=0.025),
-            'hold_days': trial.suggest_int('hold_days', 5, 30, step=3),
+            'hold_days': trial.suggest_int('hold_days', 5, 29, step=3),
             'stop_loss': trial.suggest_float('stop_loss', -0.12, -0.03, step=0.005),
             'trailing_profit_level1': trial.suggest_float('trailing_profit_level1', 0.03, 0.10, step=0.005),
             'trailing_profit_level2': trial.suggest_float('trailing_profit_level2', 0.08, 0.20, step=0.01),
@@ -396,48 +455,72 @@ def optimize_and_validate(
         if trial_params['buy_threshold'] <= trial_params['sell_threshold']:
             return -999.0, -999.0, -999.0
 
+        adjusted_weights = build_factor_weights(
+            df=train_copy,
+            base_weights=base_weights,
+            transformer_weight=trial_params['transformer_weight'],
+        )
+
         trades_train, stats_train, _ = run_backtest_loop(
-            train_copy, stock_code, market_data, base_weights,
-            {regime: trial_params}, regime, stocks_data=stocks_data,
+            train_copy, stock_code, market_data, adjusted_weights,
+            {regime: trial_params}, regime,
+            stocks_data=stocks_data,
+            initial_capital=settings.backtest.initial_capital,
         )
 
         if stats_train is None or trades_train is None or len(trades_train) == 0:
             return -999.0, -999.0, -999.0
 
         train_ret = stats_train['total_return']
-        train_sortino = _calc_sortino(trades_train['net_return'])
+        train_returns = _pick_return_series(trades_train)
+        if train_returns.empty:
+            return -999.0, -999.0, -999.0
+        train_ann_factor = np.sqrt(_estimate_trades_per_year(trades_train))
+        train_sortino = _calc_sortino(train_returns, train_ann_factor)
 
         # ??????? max_drawdown
-        cum_ret = (1 + trades_train['net_return']).cumprod()
+        cum_ret = (1 + train_returns).cumprod()
         mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
 
         return float(train_ret), float(-mdd), float(train_sortino)
 
-    def _calc_sortino(returns: pd.Series) -> float:
+    def _calc_sortino(returns: pd.Series, ann_factor: float) -> float:
         downside = returns[returns < 0]
         if len(downside) < 2:
             return 0.0
         downside_std = downside.std()
         if downside_std < 1e-9:
             return 0.0
-        return returns.mean() / downside_std * np.sqrt(252)
+        return returns.mean() / downside_std * ann_factor
 
     def _evaluate_on_val(params: dict, regime: str) -> Optional[Dict[str, float]]:
         """? val_df ?????????? val ????"""
+        adjusted_weights = build_factor_weights(
+            df=val_copy,
+            base_weights=base_weights,
+            transformer_weight=params.get('transformer_weight', 0.0),
+        )
+
         trades_val, stats_val, _ = run_backtest_loop(
-            val_copy, stock_code, market_data, base_weights,
-            {regime: params}, regime, stocks_data=stocks_data,
+            val_copy, stock_code, market_data, adjusted_weights,
+            {regime: params}, regime,
+            stocks_data=stocks_data,
+            initial_capital=settings.backtest.initial_capital,
         )
 
         if stats_val is None or trades_val is None or len(trades_val) == 0:
             return None
 
         val_ret = stats_val['total_return']
-        val_sortino = _calc_sortino(trades_val['net_return'])
+        val_returns = _pick_return_series(trades_val)
+        if val_returns.empty:
+            return None
+        val_ann_factor = np.sqrt(_estimate_trades_per_year(trades_val))
+        val_sortino = _calc_sortino(val_returns, val_ann_factor)
 
-        cum_ret = (1 + trades_val['net_return']).cumprod()
+        cum_ret = (1 + val_returns).cumprod()
         val_mdd = ((cum_ret.cummax() - cum_ret) / cum_ret.cummax()).max()
-        val_sharpe = (trades_val['net_return'].mean() / (trades_val['net_return'].std() + 1e-6)) * np.sqrt(252)
+        val_sharpe = (val_returns.mean() / (val_returns.std() + 1e-6)) * val_ann_factor
 
         return {
             'val_return': float(val_ret),
@@ -513,24 +596,32 @@ def optimize_and_validate(
             if best_val_params is not None and best_val_metrics is not None:
                 # ?? val ?????????
                 if best_val_metrics['val_return'] < settings.backtest.val_early_stop_threshold:
-                    print(f"  [???-Val] {stock_code} regime={regime} val_ret={best_val_metrics['val_return']:.2f}% < threshold={settings.backtest.val_early_stop_threshold}%, ??????")
+                    print(
+                        f"  [VAL-Fallback] {stock_code} regime={regime} "
+                        f"val_ret={best_val_metrics['val_return']:.2f}% "
+                        f"< threshold={settings.backtest.val_early_stop_threshold:.2f}%, "
+                        f"using default params"
+                    )
                     best_params_map[regime] = DEFAULT_PARAMS.copy()
                     val_summary[regime] = {'status': 'fallback', **best_val_metrics}
                 else:
-                    print(f"  [???-Val] {stock_code} regime={regime} val_ret={best_val_metrics['val_return']:.2f}% val_sortino={best_val_metrics['val_sortino']:.2f} ? ??")
+                    print(
+                        f"  [VAL-Selected] {stock_code} regime={regime} "
+                        f"val_ret={best_val_metrics['val_return']:.2f}% "
+                        f"val_sortino={best_val_metrics['val_sortino']:.2f}"
+                    )
                     best_params_map[regime] = best_val_params
                     val_summary[regime] = {'status': 'selected', **best_val_metrics}
             else:
-                print(f"  [???-Val] {stock_code} regime={regime} val ???????????????")
+                print(f"  [VAL-NoResult] {stock_code} regime={regime} validation candidates all failed")
                 best_params_map[regime] = DEFAULT_PARAMS.copy()
                 val_summary[regime] = {'status': 'all_failed'}
         else:
-            print(f"  [???-Train] {stock_code} regime={regime} Optuna ??? trial???????")
+            print(f"  [TRAIN-NoTrial] {stock_code} regime={regime} no completed Optuna trials")
             best_params_map[regime] = DEFAULT_PARAMS.copy()
             val_summary[regime] = {'status': 'no_trials'}
 
-    # ?? val ????
-    print(f"\n  [???] {stock_code} Val ???? (metric={val_selection_metric}):")
+    print(f"\n  [VAL-Summary] {stock_code} metric={val_selection_metric}")
     for regime, info in val_summary.items():
         status = info['status']
         if status in ('selected', 'fallback'):

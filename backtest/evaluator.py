@@ -40,6 +40,14 @@ def _series_to_returns(series: pd.Series) -> pd.Series:
     return clean.astype(float).pct_change().dropna()
 
 
+def _pick_trade_returns(trades_df: pd.DataFrame) -> pd.Series:
+    if trades_df is None or len(trades_df) == 0:
+        return pd.Series(dtype=float)
+    if "account_return" in trades_df.columns:
+        return trades_df["account_return"].astype(float)
+    return trades_df["net_return"].astype(float)
+
+
 def calculate_comprehensive_stats(
     trades_df: pd.DataFrame,
     equity_curve: Optional[pd.Series] = None,
@@ -60,7 +68,7 @@ def calculate_comprehensive_stats(
     if trades_df is None or len(trades_df) == 0:
         return {}
 
-    net_returns = trades_df["net_return"]
+    net_returns = _pick_trade_returns(trades_df)
     n_trades = len(net_returns)
 
     # ---- 基础收益 ----
@@ -139,13 +147,12 @@ def calculate_comprehensive_stats(
     else:
         ann_return = 0.0
 
-    ann_vol = net_returns.std() * np.sqrt(ann_factor) * 100
-
     # ★ M2 修复：Sharpe 用实际交易频率
     avg_holding_days = 15  # 默认
     if durations and durations.get('avg_trade_duration_days'):
         avg_holding_days = max(durations['avg_trade_duration_days'], 1)
     trades_per_year = 252 / avg_holding_days
+    ann_vol = net_returns.std() * np.sqrt(trades_per_year) * 100
     sharpe = (net_returns.mean() / (net_returns.std() + 1e-12)) * np.sqrt(trades_per_year)
 
     downside = net_returns[net_returns < 0]

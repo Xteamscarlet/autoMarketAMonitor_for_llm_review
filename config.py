@@ -4,9 +4,13 @@
 使用 dataclass + .env 实现统一配置源，避免参数散落在各文件�?
 """
 import os
+import math
+import logging
 from dataclasses import dataclass, field
 from typing import Optional
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 # 加载 .env 文件
 load_dotenv()
@@ -31,8 +35,85 @@ def _env_int(key: str, default: int) -> int:
 
 
 def _env_bool(key: str, default: bool = False) -> bool:
-    val = os.getenv(key, "").lower()
-    return val in ("true", "1", "yes")
+    raw = os.getenv(key)
+    if raw is None:
+        return default
+    return raw.lower() in ("true", "1", "yes")
+
+
+_MAX_SLIPPAGE_RATE = 0.05
+_MAX_COMMISSION_RATE = 0.02
+_MAX_STAMP_DUTY_RATE = 0.02
+_MAX_TRANSFER_FEE_RATE = 0.01
+_MAX_MIN_COMMISSION = 200.0
+
+
+def _clip_with_warning(name: str, value: float, lower: float, upper: float) -> float:
+    clipped = min(max(value, lower), upper)
+    if clipped != value:
+        logger.warning("[%s] clipped from %.6f to %.6f", name, value, clipped)
+    return clipped
+
+
+def _safe_finite_float(value: float, default: float, name: str) -> float:
+    try:
+        v = float(value)
+    except (ValueError, TypeError):
+        logger.warning("[%s] invalid value %r, fallback to default %.6f", name, value, default)
+        return default
+    if not math.isfinite(v):
+        logger.warning("[%s] non-finite value %r, fallback to default %.6f", name, value, default)
+        return default
+    return v
+
+
+def _normalize_rate_from_env(key: str, default: float, upper: float) -> float:
+    """Normalize rate configs with hard constraints.
+
+    Supports common percent-style input:
+    - 0.001 means 0.1%
+    - 0.1 means 10%
+    - 10 means 10% (converted to 0.10)
+    """
+    raw = _safe_finite_float(_env_float(key, default), default, key)
+    if raw >= 1.0:
+        if raw <= 100.0:
+            raw = raw / 100.0
+            logger.warning("[%s] interpreted as percent input, normalized to %.6f", key, raw)
+        else:
+            logger.warning("[%s] too large %.6f, fallback to default %.6f", key, raw, default)
+            raw = default
+
+    raw = _clip_with_warning(key, raw, 0.0, upper)
+    if raw < 0:
+        raw = 0.0
+    if not math.isfinite(raw):
+        raw = default
+    return raw
+
+
+def _normalize_slippage_rate(value: float) -> float:
+    """Normalize common slippage misconfigurations into a safe small rate."""
+    v = _safe_finite_float(value, 0.001, "SLIPPAGE_RATE")
+    original = v
+    if v < 0:
+        v = 0.0
+    elif v >= 1.0:
+        if v <= 100.0:
+            v = v / 100.0
+        else:
+            v = 0.001
+
+    # Users sometimes fill price multipliers (e.g. 0.9985) instead of slippage (0.0015).
+    if v > 0.2:
+        normalized = 1.0 - v
+        if 0.0 <= normalized <= 0.2:
+            v = normalized
+
+    v = _clip_with_warning("SLIPPAGE_RATE", v, 0.0, _MAX_SLIPPAGE_RATE)
+    if v != original:
+        logger.warning("[SLIPPAGE_RATE] normalized from %.6f to %.6f", original, v)
+    return v
 
 
 @dataclass
@@ -143,12 +224,13 @@ class BacktestConfig:
     val_ratio: float = 0.15
     n_splits: int = 5
     gap_days: int = 20
-    n_optuna_trials: int = 150
+    n_optuna_trials: int = 50
     initial_capital: float = 100000.0
     expanding_window: bool = True   # 使用扩展窗口而非固定窗口
     val_early_stop_threshold: float = -5.0
     enable_val_validation: bool = True
     val_selection_metric: str = "sortino"
+    precompute_transformer_cache: bool = True
 
     @classmethod
     def from_env(cls) -> "BacktestConfig":
@@ -157,12 +239,13 @@ class BacktestConfig:
             val_ratio=_env_float("VAL_RATIO", 0.15),
             n_splits=_env_int("N_SPLITS", 5),
             gap_days=_env_int("GAP_DAYS", 20),
-            n_optuna_trials=_env_int("N_OPTUNA_TRIALS", 150),
+            n_optuna_trials=_env_int("N_OPTUNA_TRIALS", 50),
             initial_capital=_env_float("INITIAL_CAPITAL", 100000.0),
             expanding_window=_env_bool("EXPANDING_WINDOW", True),
             val_early_stop_threshold=_env_float("VAL_EARLY_STOP_THRESHOLD", -5.0),
             enable_val_validation=_env_bool("ENABLE_VAL_VALIDATION", True),
             val_selection_metric=_env("VAL_SELECTION_METRIC", "sortino"),
+            precompute_transformer_cache=_env_bool("PRECOMPUTE_TRANSFORMER_CACHE", True),
         )
 
 
@@ -183,6 +266,8 @@ class PathConfig:
     topk_checkpoint_dir: str = "checkpoints"
     stock_pool_file: str = "model/stock_pool.json"
     stock_data_file: str = "stock_data_cleaned.feather"
+    fundamental_cache_dir: str = "./stock_cache/fundamentals"
+    ai_analysis_cache_dir: str = "./stock_cache/ai_analysis"
     wechat_webhook: str = ""
     wechat_upload_url: str = ""
 
@@ -204,8 +289,78 @@ class PathConfig:
             topk_checkpoint_dir=_env("TOPK_CHECKPOINT_DIR", "checkpoints"),
             stock_pool_file=_env("STOCK_POOL_FILE", "model/stock_pool.json"),
             stock_data_file=_env("STOCK_DATA_FILE", "stock_data_cleaned.feather"),
+            fundamental_cache_dir=_env("FUNDAMENTAL_CACHE_DIR", f"{cache_dir}/fundamentals"),
+            ai_analysis_cache_dir=_env("AI_ANALYSIS_CACHE_DIR", f"{cache_dir}/ai_analysis"),
             wechat_webhook=_env("WECHAT_WEBHOOK", ""),
             wechat_upload_url=_env("WECHAT_UPLOAD_URL", ""),
+        )
+
+
+@dataclass
+class CacheConfig:
+    """缓存校验与清理配置"""
+    auto_delete_invalid_cache: bool = False
+    strict_freshness_check: bool = True
+
+    @classmethod
+    def from_env(cls) -> "CacheConfig":
+        return cls(
+            auto_delete_invalid_cache=_env_bool("CACHE_AUTO_DELETE_INVALID", False),
+            strict_freshness_check=_env_bool("CACHE_STRICT_FRESHNESS_CHECK", True),
+        )
+
+
+@dataclass
+class LLMConfig:
+    """LLM / OpenAI-compatible 接口配置"""
+    enabled: bool = False
+    api_key: str = ""
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    timeout_seconds: int = 45
+    max_prompt_chars: int = 12000
+    thinking_enabled: bool = False
+    thinking_type: str = "enabled"
+
+    @classmethod
+    def from_env(cls) -> "LLMConfig":
+        api_key = _env("OPENAI_API_KEY", "")
+        enabled = _env_bool("LLM_ENABLED", bool(api_key)) or bool(api_key)
+        return cls(
+            enabled=enabled,
+            api_key=api_key,
+            base_url=_env("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+            model=_env("OPENAI_MODEL", "gpt-4o-mini"),
+            timeout_seconds=_env_int("LLM_TIMEOUT_SECONDS", 45),
+            max_prompt_chars=_env_int("LLM_MAX_PROMPT_CHARS", 12000),
+            thinking_enabled=_env_bool("LLM_THINKING_ENABLED", False),
+            thinking_type=_env("LLM_THINKING_TYPE", "enabled"),
+        )
+
+
+@dataclass
+class AnalysisConfig:
+    """财报 / AI 技术分析增强层配置"""
+    enable_fundamental_agent: bool = True
+    enable_technical_agent: bool = True
+    blend_fundamental_score: bool = True
+    blend_technical_score: bool = True
+    fundamental_weight: float = 0.20
+    technical_weight: float = 0.15
+    min_fundamental_score: float = 0.35
+    max_recent_days_for_technical: int = 120
+
+    @classmethod
+    def from_env(cls) -> "AnalysisConfig":
+        return cls(
+            enable_fundamental_agent=_env_bool("ENABLE_FUNDAMENTAL_AGENT", True),
+            enable_technical_agent=_env_bool("ENABLE_TECHNICAL_AGENT", True),
+            blend_fundamental_score=_env_bool("BLEND_FUNDAMENTAL_SCORE", True),
+            blend_technical_score=_env_bool("BLEND_TECHNICAL_SCORE", True),
+            fundamental_weight=_env_float("FUNDAMENTAL_WEIGHT", 0.20),
+            technical_weight=_env_float("TECHNICAL_WEIGHT", 0.15),
+            min_fundamental_score=_env_float("MIN_FUNDAMENTAL_SCORE", 0.35),
+            max_recent_days_for_technical=_env_int("MAX_RECENT_DAYS_FOR_TECHNICAL", 120),
         )
 
 
@@ -219,11 +374,19 @@ class CommissionConfig:
 
     @classmethod
     def from_env(cls) -> "CommissionConfig":
+        min_commission = _safe_finite_float(_env_float("MIN_COMMISSION", 5.0), 5.0, "MIN_COMMISSION")
+        min_commission = _clip_with_warning("MIN_COMMISSION", min_commission, 0.0, _MAX_MIN_COMMISSION)
         return cls(
-            commission_rate=_env_float("COMMISSION_RATE", 0.00025),
-            min_commission=_env_float("MIN_COMMISSION", 5.0),
-            stamp_duty_rate=_env_float("STAMP_DUTY_RATE", 0.0005),
-            transfer_fee_rate=_env_float("TRANSFER_FEE_RATE", 0.00001),
+            commission_rate=_normalize_rate_from_env(
+                "COMMISSION_RATE", 0.00025, _MAX_COMMISSION_RATE
+            ),
+            min_commission=min_commission,
+            stamp_duty_rate=_normalize_rate_from_env(
+                "STAMP_DUTY_RATE", 0.0005, _MAX_STAMP_DUTY_RATE
+            ),
+            transfer_fee_rate=_normalize_rate_from_env(
+                "TRANSFER_FEE_RATE", 0.00001, _MAX_TRANSFER_FEE_RATE
+            ),
         )
 
 
@@ -235,9 +398,11 @@ class SlippageConfig:
 
     @classmethod
     def from_env(cls) -> "SlippageConfig":
+        buy_slippage_rate = _normalize_slippage_rate(_env_float("BUY_SLIPPAGE_RATE", 0.001))
+        sell_slippage_rate = _normalize_slippage_rate(_env_float("SELL_SLIPPAGE_RATE", 0.001))
         return cls(
-            buy_slippage_rate=_env_float("BUY_SLIPPAGE_RATE", 0.001),
-            sell_slippage_rate=_env_float("SELL_SLIPPAGE_RATE", 0.001),
+            buy_slippage_rate=buy_slippage_rate,
+            sell_slippage_rate=sell_slippage_rate,
         )
 
 
@@ -308,10 +473,13 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     paths: PathConfig = field(default_factory=PathConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
     commission: CommissionConfig = field(default_factory=CommissionConfig)
     slippage: SlippageConfig = field(default_factory=SlippageConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
     regime: RegimeConfig = field(default_factory=RegimeConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -320,15 +488,24 @@ class AppConfig:
             risk=RiskConfig.from_env(),
             backtest=BacktestConfig.from_env(),
             paths=PathConfig.from_env(),
+            cache=CacheConfig.from_env(),
             commission=CommissionConfig.from_env(),
             slippage=SlippageConfig.from_env(),
             scheduler=SchedulerConfig.from_env(),
             regime=RegimeConfig.from_env(),
+            llm=LLMConfig.from_env(),
+            analysis=AnalysisConfig.from_env(),
         )
 
     def ensure_dirs(self):
         """确保所有需要的目录存在"""
-        for d in [self.paths.cache_dir, self.paths.result_dir, self.paths.topk_checkpoint_dir]:
+        for d in [
+            self.paths.cache_dir,
+            self.paths.result_dir,
+            self.paths.topk_checkpoint_dir,
+            self.paths.fundamental_cache_dir,
+            self.paths.ai_analysis_cache_dir,
+        ]:
             os.makedirs(d, exist_ok=True)
 
 

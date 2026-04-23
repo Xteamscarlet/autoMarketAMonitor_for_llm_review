@@ -158,7 +158,7 @@ def calculate_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # 新增：NaN预处理
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         if col in df.columns and df[col].isna().any():
-            df[col] = df[col].ffill().bfill()
+            df[col] = df[col].ffill()
 
     # 均线 - 使用安全计算
     df['MA5'] = safe_sma(df['Close'], 5)
@@ -268,7 +268,7 @@ def calculate_orthogonal_factors(
 
     # 前向填充缺失值
     if df['Close'].isna().any():
-        df['Close'] = df['Close'].ffill().bfill()
+        df['Close'] = df['Close'].ffill()
     df = df.dropna(subset=['Close', 'Volume'])
 
     # 新增：数据长度检查
@@ -508,7 +508,7 @@ def calculate_orthogonal_factors_without_transformer(
 
     # 前向填充缺失值
     if df['Close'].isna().any():
-        df['Close'] = df['Close'].ffill().bfill()
+        df['Close'] = df['Close'].ffill()
     df = df.dropna(subset=['Close', 'Volume'])
 
     # ========== 传统因子计算 ==========

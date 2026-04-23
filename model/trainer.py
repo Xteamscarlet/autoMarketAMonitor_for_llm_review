@@ -561,9 +561,9 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     # ========== 2. 数据预处理 ==========
     logger.info("数据预处理：严格清洗...")
-    if 'Code' not in combined_df.columns or 'Date' not in combined_df.columns:
-        if 'Date' not in combined_df.columns and combined_df.index.name == 'Date':
-            combined_df = combined_df.reset_index()
+    if 'Date' not in combined_df.columns and combined_df.index.name == 'Date':
+        combined_df = combined_df.reset_index()
+    if 'Code' in combined_df.columns and 'Date' in combined_df.columns:
         combined_df = combined_df.drop_duplicates(subset=['Code', 'Date'])
 
     price_cols = ['Open', 'High', 'Low', 'Close']
@@ -597,16 +597,6 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         if col in combined_df.columns:
             combined_df[col] = combined_df[col].replace([np.inf, -np.inf], np.nan)
 
-    # 重新截断特征值
-    for col in FEATURES:
-        if col in combined_df.columns:
-            q01 = combined_df[col].quantile(0.02)
-            q99 = combined_df[col].quantile(0.98)
-            if np.isnan(q01) or np.isnan(q99):
-                logger.warning(f"feature {col} quantile NaN (q01={q01}, q99={q99}), skip clip")
-                continue
-            combined_df[col] = combined_df[col].clip(q01, q99)
-
     combined_df = combined_df.dropna(subset=FEATURES)
     combined_df = combined_df.reset_index(drop=True)
     logger.info(f"清洗后数据量: {len(combined_df)}")
@@ -637,6 +627,19 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         train_part = group.iloc[:train_size].copy()
         val_part = group.iloc[train_size:].copy()
+
+        # Use train-only quantiles for clipping to avoid leaking validation-period distribution.
+        for col in FEATURES:
+            if col not in train_part.columns:
+                continue
+            q01 = train_part[col].quantile(0.02)
+            q99 = train_part[col].quantile(0.98)
+            if np.isnan(q01) or np.isnan(q99):
+                continue
+            train_part[col] = train_part[col].clip(q01, q99)
+            if col in val_part.columns:
+                val_part[col] = val_part[col].clip(q01, q99)
+
         train_features = train_part[FEATURES].values
 
         if np.isnan(train_features).any() or np.isinf(train_features).any():

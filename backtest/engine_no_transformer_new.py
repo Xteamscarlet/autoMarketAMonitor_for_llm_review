@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 # ==================== 缓存配置 ====================
 _commission_cache = None
+MAX_TRANSACTION_COST_RATIO = 0.20
+MAX_RUNTIME_SLIPPAGE_RATE = 0.05
 
 
 def _get_commission_cfg() -> CommissionConfig:
@@ -31,8 +33,9 @@ def _get_commission_cfg() -> CommissionConfig:
 
 
 # ==================== 滑点 ====================
-BUY_SLIPPAGE_RATE = 0.001
-SELL_SLIPPAGE_RATE = 0.001
+_slippage_cache = SlippageConfig.from_env()
+BUY_SLIPPAGE_RATE = float(np.clip(_slippage_cache.buy_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
+SELL_SLIPPAGE_RATE = float(np.clip(_slippage_cache.sell_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
 
 
 def calculate_transaction_cost(
@@ -53,18 +56,33 @@ def calculate_transaction_cost(
     stamp_duty_rate = stamp_duty_rate if stamp_duty_rate is not None else comm_cfg.stamp_duty_rate
     transfer_fee_rate = transfer_fee_rate if transfer_fee_rate is not None else comm_cfg.transfer_fee_rate
 
+    if shares <= 0 or price <= 0 or not np.isfinite(price):
+        return 0.0
+
     trade_value = price * shares
     commission = max(trade_value * commission_rate, min_commission)
     stamp_duty = trade_value * stamp_duty_rate if direction == 'sell' else 0.0
     transfer_fee = trade_value * transfer_fee_rate if code.startswith('6') else 0.0
 
-    return commission + stamp_duty + transfer_fee
+    total_cost = commission + stamp_duty + transfer_fee
+    max_allowed = trade_value * MAX_TRANSACTION_COST_RATIO
+    if total_cost > max_allowed:
+        logger.warning(
+            "[%s] transaction cost %.4f capped to %.4f (%.1f%% of notional)",
+            code,
+            total_cost,
+            max_allowed,
+            MAX_TRANSACTION_COST_RATIO * 100,
+        )
+        total_cost = max_allowed
+    return total_cost
 
 
 def apply_slippage(price: float, direction: str, slippage_rate: Optional[float] = None) -> float:
     """应用滑点"""
     if slippage_rate is None:
         slippage_rate = BUY_SLIPPAGE_RATE if direction == 'buy' else SELL_SLIPPAGE_RATE
+    slippage_rate = float(np.clip(slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
     if direction == 'buy':
         return price * (1 + slippage_rate)
     else:
@@ -260,6 +278,18 @@ def run_backtest_loop_no_transformer(
                 if current_price <= df['limit_down'].iloc[i]:
                     continue
 
+                if actual_buy_cost <= 0 or not np.isfinite(actual_buy_cost):
+                    logger.warning(
+                        "[%s] invalid actual_buy_cost %.4f before sell, reset position",
+                        stock_code,
+                        actual_buy_cost,
+                    )
+                    position = 0
+                    shares = 0
+                    actual_buy_cost = 0.0
+                    buy_date = None
+                    continue
+
                 sell_price = apply_slippage(current_price, 'sell')
                 cost = calculate_transaction_cost(sell_price, shares, 'sell', stock_code)
                 actual_sell_proceeds = sell_price * shares - cost
@@ -318,14 +348,37 @@ def run_backtest_loop_no_transformer(
 
                 # 计算股数
                 try:
-                    shares = max(100, int(initial_capital * position_ratio / current_price / 100) * 100)
-                    shares = min(shares, int(initial_capital / current_price / 100) * 100)
+                    target_shares = int(initial_capital * position_ratio / current_price / 100) * 100
+                    max_affordable_shares = int(initial_capital / current_price / 100) * 100
                 except (ValueError, ZeroDivisionError):
+                    continue
+
+                if max_affordable_shares < 100:
+                    logger.debug(
+                        "[%s] skip buy at %s: price %.2f exceeds one-lot budget %.2f",
+                        stock_code,
+                        current_date,
+                        current_price,
+                        initial_capital,
+                    )
+                    continue
+
+                shares = min(max(target_shares, 100), max_affordable_shares)
+                if shares < 100:
                     continue
 
                 buy_price_raw = apply_slippage(current_price, 'buy')
                 buy_commission = calculate_transaction_cost(buy_price_raw, shares, 'buy', stock_code)
                 actual_buy_cost = buy_price_raw * shares + buy_commission
+                if actual_buy_cost <= 0 or not np.isfinite(actual_buy_cost):
+                    logger.warning(
+                        "[%s] invalid buy cost %.4f (shares=%s, buy_price=%.4f), skip",
+                        stock_code,
+                        actual_buy_cost,
+                        shares,
+                        buy_price_raw,
+                    )
+                    continue
 
                 position = 1
                 buy_date = current_date

@@ -110,7 +110,7 @@ def calculate_orthogonal_factors(
 
     # 前向填充缺失值
     if df['Close'].isna().any():
-        df['Close'] = df['Close'].ffill().bfill()
+        df['Close'] = df['Close'].ffill()
     df = df.dropna(subset=['Close', 'Volume'])
 
     # ========== 传统因子计算 ==========

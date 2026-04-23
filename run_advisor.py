@@ -1,40 +1,35 @@
 # -*- coding: utf-8 -*-
-"""
-实盘决策入口脚本
-每日运行，生成买卖建议
-"""
+"""实盘决策入口脚本。"""
+
+import argparse
+import logging
 import os
 import sys
-import logging
-import argparse
 
 from config import get_settings
 
 
-def setup_logging(verbose: bool = False):
-    """配置日志"""
+def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format='%(asctime)s [%(levelname)s] %(name)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),
-        ],
+        format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout)],
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="实盘决策助手")
-    parser.add_argument('--verbose', '-v', action='store_true', help='详细日志')
-    parser.add_argument('--dry-run', action='store_true', help='仅检查环境和配置，不执行决策')
+    parser.add_argument("--verbose", "-v", action="store_true", help="输出详细日志")
+    parser.add_argument("--dry-run", action="store_true", help="仅检查环境和配置，不执行决策")
     args = parser.parse_args()
 
     setup_logging(args.verbose)
-    logger = logging.getLogger('advisor')
+    logger = logging.getLogger("advisor")
     settings = get_settings()
 
     print("\n" + "=" * 60)
-    print("实盘决策助手 V3 启动")
+    print("实盘决策助手启动")
     print("=" * 60)
     print(f"  策略文件: {settings.paths.strategy_file}")
     print(f"  持仓文件: {settings.paths.portfolio_file}")
@@ -48,52 +43,59 @@ def main():
     if args.dry_run:
         print("\n[DRY RUN] 环境检查:")
 
-        # 检查策略文件
         if os.path.exists(settings.paths.strategy_file):
             import json
-            with open(settings.paths.strategy_file, 'r') as f:
-                strategies = json.load(f)
-            print(f"  ✓ 策略文件: {len(strategies)} 只股票的策略参数")
-        else:
-            print(f"  ✗ 策略文件不存在，请先运行 run_backtest.py")
 
-        # 检查模型
+            with open(settings.paths.strategy_file, "r", encoding="utf-8") as file:
+                strategies = json.load(file)
+            print(f"  [OK] 策略文件: {len(strategies)} 只股票的策略参数")
+        else:
+            print("  [MISSING] 策略文件不存在，请先运行 run_backtest.py")
+
         model_exists = os.path.exists(settings.paths.model_path)
         swa_exists = os.path.exists(settings.paths.swa_model_path)
-        print(f"  {'✓' if model_exists else '✗'} EMA 模型: {settings.paths.model_path}")
-        print(f"  {'✓' if swa_exists else '✗'} SWA 模型: {settings.paths.swa_model_path}")
+        print(f"  {'[OK]' if model_exists else '[MISSING]'} EMA 模型: {settings.paths.model_path}")
+        print(f"  {'[OK]' if swa_exists else '[MISSING]'} SWA 模型: {settings.paths.swa_model_path}")
 
-        # 检查 scaler
         scaler_exists = os.path.exists(settings.paths.scaler_path)
         global_scaler_exists = os.path.exists(settings.paths.global_scaler_path)
-        print(f"  {'✓' if scaler_exists else '✗'} 专用 Scaler: {settings.paths.scaler_path}")
-        print(f"  {'✓' if global_scaler_exists else '✗'} 全局 Scaler: {settings.paths.global_scaler_path}")
+        print(f"  {'[OK]' if scaler_exists else '[MISSING]'} 专用 Scaler: {settings.paths.scaler_path}")
+        print(f"  {'[OK]' if global_scaler_exists else '[MISSING]'} 全局 Scaler: {settings.paths.global_scaler_path}")
 
-        # 检查持仓文件
         portfolio_exists = os.path.exists(settings.paths.portfolio_file)
-        print(f"  {'✓' if portfolio_exists else '✗'} 持仓文件: {settings.paths.portfolio_file}")
+        print(f"  {'[OK]' if portfolio_exists else '[MISSING]'} 持仓文件: {settings.paths.portfolio_file}")
 
-        # 检查 GPU
+        print(
+            f"  [INFO] 基本面 Agent: {'开启' if settings.analysis.enable_fundamental_agent else '关闭'} | "
+            f"技术面 Agent: {'开启' if settings.analysis.enable_technical_agent else '关闭'}"
+        )
+        print(
+            f"  [INFO] LLM: {'开启' if settings.llm.enabled else '关闭'} | "
+            f"Model: {settings.llm.model or '未配置'} | Base URL: {settings.llm.base_url or '未配置'}"
+        )
+
         try:
             import torch
+
             if torch.cuda.is_available():
-                print(f"  ✓ GPU: {torch.cuda.get_device_name(0)}")
+                print(f"  [OK] GPU: {torch.cuda.get_device_name(0)}")
             else:
-                print(f"  ⚠️ 无 GPU，使用 CPU 推理")
+                print("  [INFO] 未检测到 GPU，使用 CPU 推理")
         except ImportError:
-            print(f"  ✗ PyTorch 未安装")
+            print("  [MISSING] PyTorch 未安装")
 
         return
 
-    # 执行决策
     try:
         from live.advisor import run_advisor
+
         run_advisor()
     except KeyboardInterrupt:
         print("\n用户中断")
-    except Exception as e:
-        logger.error(f"决策执行失败: {e}")
+    except Exception as exc:
+        logger.error("决策执行失败: %s", exc)
         import traceback
+
         traceback.print_exc()
 
 

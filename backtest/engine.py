@@ -24,6 +24,9 @@ from config import get_settings, CommissionConfig, SlippageConfig
 
 logger = logging.getLogger(__name__)
 
+MAX_TRANSACTION_COST_RATIO = 0.20
+MAX_RUNTIME_SLIPPAGE_RATE = 0.05
+
 
 # ==================== 模块级缓存 ====================
 _commission_cfg: Optional[CommissionConfig] = None
@@ -65,12 +68,26 @@ def calculate_transaction_cost(
     if transfer_fee_rate is None:
         transfer_fee_rate = cfg.transfer_fee_rate
 
+    if shares <= 0 or price <= 0 or not np.isfinite(price):
+        return 0.0
+
     amount = price * shares
     commission = max(amount * commission_rate, min_commission)
     stamp_duty = amount * stamp_duty_rate if direction == 'sell' else 0.0
-    transfer_fee = amount * transfer_fee_rate if direction == 'sell' else 0.0
+    transfer_fee = amount * transfer_fee_rate if code.startswith('6') else 0.0
 
-    return commission + stamp_duty + transfer_fee
+    total_cost = commission + stamp_duty + transfer_fee
+    max_allowed = amount * MAX_TRANSACTION_COST_RATIO
+    if total_cost > max_allowed:
+        logger.warning(
+            "[%s] transaction cost %.4f capped to %.4f (%.1f%% of notional)",
+            code,
+            total_cost,
+            max_allowed,
+            MAX_TRANSACTION_COST_RATIO * 100,
+        )
+        total_cost = max_allowed
+    return total_cost
 
 
 def calculate_multi_timeframe_score(df: pd.DataFrame, weights: Optional[Dict[str, float]] = None) -> pd.DataFrame:
@@ -204,8 +221,9 @@ def run_backtest_loop(
     """
     df = df.copy()
 
+    initial_weights = build_factor_weights(df=df, base_weights=weights, transformer_weight=0.0)
     if 'Combined_Score' not in df.columns:
-        df = calculate_multi_timeframe_score(df, weights=weights)
+        df = calculate_multi_timeframe_score(df, weights=initial_weights)
 
     limit_ratio = get_limit_ratio(stock_code)
     df['limit_up'] = df['Close'].shift(1) * (1 + limit_ratio)
@@ -220,18 +238,32 @@ def run_backtest_loop(
 
     trades = []
     position = 0
-    actual_buy_cost = 0
+    actual_buy_cost = 0.0
     shares = 0
-    peak = 0
+    peak = 0.0
     buy_date = None
+    buy_price_raw = 0.0
+    capital_before_buy = 0.0
+    cash_after_buy = 0.0
+    buy_commission = 0.0
     signal_strength = 1.0
+    cash_balance = float(initial_capital)
 
     current_weights = weights.copy()
     last_weight_update = 60
 
     slip_cfg = _get_slippage_cfg()
-    buy_slippage_rate = slip_cfg.buy_slippage_rate
-    sell_slippage_rate = slip_cfg.sell_slippage_rate
+    buy_slippage_rate = float(np.clip(slip_cfg.buy_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
+    sell_slippage_rate = float(np.clip(slip_cfg.sell_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
+    if buy_slippage_rate != slip_cfg.buy_slippage_rate or sell_slippage_rate != slip_cfg.sell_slippage_rate:
+        logger.warning(
+            "[%s] slippage clipped at runtime: buy %.6f->%.6f, sell %.6f->%.6f",
+            stock_code,
+            slip_cfg.buy_slippage_rate,
+            buy_slippage_rate,
+            slip_cfg.sell_slippage_rate,
+            sell_slippage_rate,
+        )
 
     settings = get_settings()
     regime_cfg = settings.regime
@@ -248,15 +280,21 @@ def run_backtest_loop(
             hist_df = df.iloc[max(0, i - 250): i]
             factor_cols = [col for col in hist_df.columns if col not in NON_FACTOR_COLS]
             if factor_cols:
-                new_weights = calculate_dynamic_weights(hist_df, factor_cols, ic_window_range=(20, 120), use_ewma=True)
-                for col in factor_cols:
+                traditional_factor_cols = [col for col in factor_cols if col in current_weights]
+                new_weights = calculate_dynamic_weights(
+                    hist_df, traditional_factor_cols, ic_window_range=(20, 120), use_ewma=True
+                )
+                for col in traditional_factor_cols:
                     if col in current_weights and col in new_weights:
                         current_weights[col] = 0.7 * current_weights[col] + 0.3 * new_weights[col]
                 sum_w = sum(current_weights.values())
                 if sum_w > 0:
                     current_weights = {k: v / sum_w for k, v in current_weights.items()}
                 last_weight_update = i
-                df = calculate_multi_timeframe_score(df, weights=current_weights)
+                refreshed_weights = build_factor_weights(
+                    df=df, base_weights=current_weights, transformer_weight=0.0
+                )
+                df = calculate_multi_timeframe_score(df, weights=refreshed_weights)
 
         # 增强版市场状态判断
         if regime is None:
@@ -277,7 +315,7 @@ def run_backtest_loop(
             base_weights=current_weights,
             transformer_weight=p.get('transformer_weight', 0.0),
         )
-        score = _compute_row_score(df, i, effective_weights)
+        df.at[date, 'Combined_Score'] = score = _compute_row_score(df, i, effective_weights)
 
         # ========== 买入逻辑 ==========
         if position == 0 and score > p.get('buy_threshold', 0.6):
@@ -337,14 +375,60 @@ def run_backtest_loop(
                 position_ratio *= 0.5
 
             try:
-                shares = max(100, int(initial_capital * position_ratio / price / 100) * 100)
-                shares = min(shares, int(initial_capital / price / 100) * 100)
+                capital_for_trade = max(cash_balance, 0.0)
+                target_shares = int(capital_for_trade * position_ratio / price / 100) * 100
+                max_affordable_shares = int(capital_for_trade / price / 100) * 100
             except (ValueError, ZeroDivisionError):
+                continue
+
+            if max_affordable_shares < 100:
+                logger.debug(
+                    "[%s] skip buy at %s: price %.2f exceeds one-lot budget %.2f",
+                    stock_code,
+                    date,
+                    price,
+                    capital_for_trade,
+                )
+                continue
+
+            shares = min(max(target_shares, 100), max_affordable_shares)
+            if shares < 100:
                 continue
 
             buy_price_raw = price * (1 + buy_slippage_rate)
             buy_commission = calculate_transaction_cost(buy_price_raw, shares, 'buy', stock_code)
             actual_buy_cost = buy_price_raw * shares + buy_commission
+
+            # Keep buy affordability aligned with cash-based account simulation.
+            while shares >= 100 and actual_buy_cost > capital_for_trade:
+                shares -= 100
+                if shares >= 100:
+                    buy_commission = calculate_transaction_cost(buy_price_raw, shares, 'buy', stock_code)
+                    actual_buy_cost = buy_price_raw * shares + buy_commission
+            if shares < 100:
+                continue
+
+            if actual_buy_cost <= 0 or not np.isfinite(actual_buy_cost):
+                logger.warning(
+                    "[%s] invalid buy cost %.4f (shares=%s, buy_price=%.4f), skip",
+                    stock_code,
+                    actual_buy_cost,
+                    shares,
+                    buy_price_raw,
+                )
+                continue
+
+            capital_before_buy = cash_balance
+            cash_after_buy = capital_before_buy - actual_buy_cost
+            if cash_after_buy < -1e-6:
+                logger.warning(
+                    "[%s] negative cash after buy %.4f, skip trade",
+                    stock_code,
+                    cash_after_buy,
+                )
+                continue
+            cash_balance = max(cash_after_buy, 0.0)
+
             buy_date = date
             position = 1
             peak = buy_price_raw
@@ -416,30 +500,140 @@ def run_backtest_loop(
                 if price <= df['limit_down'].iloc[i]:
                     continue
 
+                if actual_buy_cost <= 0 or not np.isfinite(actual_buy_cost):
+                    logger.warning(
+                        "[%s] invalid actual_buy_cost %.4f before sell, reset position",
+                        stock_code,
+                        actual_buy_cost,
+                    )
+                    position = 0
+                    shares = 0
+                    actual_buy_cost = 0.0
+                    buy_date = None
+                    buy_price_raw = 0.0
+                    capital_before_buy = 0.0
+                    cash_after_buy = 0.0
+                    continue
+
                 sell_price_raw = price * (1 - sell_slippage_rate)
                 sell_commission_total = calculate_transaction_cost(sell_price_raw, shares, 'sell', stock_code)
                 actual_sell_proceeds = sell_price_raw * shares - sell_commission_total
+                if actual_sell_proceeds <= 0 or not np.isfinite(actual_sell_proceeds):
+                    logger.warning(
+                        "[%s] invalid sell proceeds %.4f before sell, reset position",
+                        stock_code,
+                        actual_sell_proceeds,
+                    )
+                    position = 0
+                    shares = 0
+                    actual_buy_cost = 0.0
+                    buy_date = None
+                    buy_price_raw = 0.0
+                    capital_before_buy = 0.0
+                    cash_after_buy = 0.0
+                    continue
+
                 net_ret = (actual_sell_proceeds - actual_buy_cost) / actual_buy_cost
+                cash_after_sell = cash_balance + actual_sell_proceeds
+                account_ret = (
+                    (cash_after_sell - capital_before_buy) / capital_before_buy
+                    if capital_before_buy > 0 else 0.0
+                )
+                if net_ret < -0.999:
+                    logger.warning(
+                        "[%s] net_return clipped from %.4f to -0.9990; check slippage/fees config",
+                        stock_code,
+                        net_ret,
+                    )
+                    net_ret = -0.999
 
                 trades.append({
                     'buy_date': buy_date,
                     'sell_date': date,
                     'net_return': net_ret,
+                    'account_return': account_ret,
                     'reason': sell_reason,
                     'shares': shares,
+                    'buy_price_raw': buy_price_raw,
+                    'sell_price_raw': sell_price_raw,
+                    'actual_buy_cost': actual_buy_cost,
+                    'actual_sell_proceeds': actual_sell_proceeds,
+                    'buy_commission': buy_commission,
+                    'sell_commission': sell_commission_total,
+                    'commission': buy_commission + sell_commission_total,
+                    'capital_before_buy': capital_before_buy,
+                    'cash_after_buy': cash_after_buy,
+                    'cash_after_sell': cash_after_sell,
                     'signal_strength': signal_strength if has_pred_ret else 1.0,
                     'confidence': df['transformer_conf'].loc[buy_date] if has_transformer_conf and buy_date in df['transformer_conf'].index else None,
                 })
+                cash_balance = max(cash_after_sell, 0.0)
                 position = 0
+                shares = 0
+                actual_buy_cost = 0.0
+                buy_date = None
+                buy_price_raw = 0.0
+                capital_before_buy = 0.0
+                cash_after_buy = 0.0
+
+    # Force-close any residual position on the last available bar to avoid
+    # under-reporting final equity when the loop ends before an explicit sell signal.
+    if position == 1 and shares >= 1 and buy_date is not None and actual_buy_cost > 0:
+        last_date = df.index[-1]
+        last_price = float(df['Close'].iloc[-1]) if pd.notna(df['Close'].iloc[-1]) else np.nan
+        if np.isfinite(last_price) and last_price > 0:
+            sell_price_raw = last_price * (1 - sell_slippage_rate)
+            sell_commission_total = calculate_transaction_cost(sell_price_raw, shares, 'sell', stock_code)
+            actual_sell_proceeds = sell_price_raw * shares - sell_commission_total
+            if np.isfinite(actual_sell_proceeds) and actual_sell_proceeds > 0:
+                net_ret = (actual_sell_proceeds - actual_buy_cost) / actual_buy_cost
+                cash_after_sell = cash_balance + actual_sell_proceeds
+                account_ret = (
+                    (cash_after_sell - capital_before_buy) / capital_before_buy
+                    if capital_before_buy > 0 else 0.0
+                )
+                if net_ret < -0.999:
+                    logger.warning(
+                        "[%s] net_return clipped from %.4f to -0.9990 on end_of_data close",
+                        stock_code,
+                        net_ret,
+                    )
+                    net_ret = -0.999
+
+                trades.append({
+                    'buy_date': buy_date,
+                    'sell_date': last_date,
+                    'net_return': net_ret,
+                    'account_return': account_ret,
+                    'reason': 'end_of_data',
+                    'shares': shares,
+                    'buy_price_raw': buy_price_raw,
+                    'sell_price_raw': sell_price_raw,
+                    'actual_buy_cost': actual_buy_cost,
+                    'actual_sell_proceeds': actual_sell_proceeds,
+                    'buy_commission': buy_commission,
+                    'sell_commission': sell_commission_total,
+                    'commission': buy_commission + sell_commission_total,
+                    'capital_before_buy': capital_before_buy,
+                    'cash_after_buy': cash_after_buy,
+                    'cash_after_sell': cash_after_sell,
+                    'signal_strength': signal_strength if has_pred_ret else 1.0,
+                    'confidence': df['transformer_conf'].loc[buy_date] if has_transformer_conf and buy_date in df['transformer_conf'].index else None,
+                })
+                cash_balance = max(cash_after_sell, 0.0)
 
     if not trades:
         return None, None, df
 
     trades_df = pd.DataFrame(trades)
+    ret_col = 'account_return' if 'account_return' in trades_df.columns else 'net_return'
+    ret_series = trades_df[ret_col]
     stats = {
         'total_trades': len(trades_df),
-        'win_rate': (trades_df['net_return'] > 0).mean() * 100,
-        'avg_return': trades_df['net_return'].mean() * 100,
-        'total_return': ((trades_df['net_return'] + 1).prod() - 1) * 100,
+        'win_rate': (ret_series > 0).mean() * 100,
+        'avg_return': ret_series.mean() * 100,
+        'total_return': (cash_balance / initial_capital - 1) * 100 if initial_capital > 0 else 0.0,
+        'start_capital': float(initial_capital),
+        'final_capital': float(cash_balance),
     }
     return trades_df, stats, df

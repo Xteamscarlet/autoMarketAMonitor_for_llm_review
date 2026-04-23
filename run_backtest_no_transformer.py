@@ -265,7 +265,7 @@ def process_single_stock_no_transformer(args):
             trades_df=combined_trades,
             equity_curve=equity_curve,
             benchmark_curve=benchmark_returns,
-            initial_cash=100000.0,
+            initial_cash=settings.backtest.initial_capital,
             commissions=total_commissions,
         )
 
@@ -541,7 +541,7 @@ def main():
             position_status = pd.Series(0, index=df.index)
             for t in trades.itertuples():
                 try:
-                    holding_dates = df.loc[t.buy_date: t.sell_date].index
+                    holding_dates = df.index[(df.index > t.buy_date) & (df.index <= t.sell_date)]
                     position_status.loc[holding_dates] = 1
                 except KeyError:
                     pass

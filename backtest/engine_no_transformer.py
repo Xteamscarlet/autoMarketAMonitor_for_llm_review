@@ -19,6 +19,9 @@ logger = logging.getLogger(__name__)
 
 from config import CommissionConfig, SlippageConfig
 
+MAX_TRANSACTION_COST_RATIO = 0.20
+MAX_RUNTIME_SLIPPAGE_RATE = 0.05
+
 
 _commission_cache = None
 
@@ -50,16 +53,31 @@ def calculate_transaction_cost(
     if transfer_fee_rate is None:
         transfer_fee_rate = _commission_cfg.transfer_fee_rate
 
+    if shares <= 0 or price <= 0 or not np.isfinite(price):
+        return 0.0
+
+    amount = price * shares
     # 佣金（买卖都收）
-    commission = max(price * shares * commission_rate, min_commission)
+    commission = max(amount * commission_rate, min_commission)
 
     # 印花税（仅卖出收取，千分之0.5）
-    stamp_duty = price * shares * stamp_duty_rate if direction == 'sell' else 0
+    stamp_duty = amount * stamp_duty_rate if direction == 'sell' else 0
 
     # 过户费（沪深股票，买卖都收，十万分之一）
-    transfer_fee = price * shares * transfer_fee_rate if code.startswith('6') else 0
+    transfer_fee = amount * transfer_fee_rate if code.startswith('6') else 0
 
-    return commission + stamp_duty + transfer_fee
+    total_cost = commission + stamp_duty + transfer_fee
+    max_allowed = amount * MAX_TRANSACTION_COST_RATIO
+    if total_cost > max_allowed:
+        logger.warning(
+            "[%s] transaction cost %.4f capped to %.4f (%.1f%% of notional)",
+            code,
+            total_cost,
+            max_allowed,
+            MAX_TRANSACTION_COST_RATIO * 100,
+        )
+        total_cost = max_allowed
+    return total_cost
 
 
 def calculate_multi_timeframe_score_no_transformer(
@@ -140,8 +158,17 @@ def run_backtest_loop_no_transformer(
 
     # 滑点配置
     _slippage_cfg = SlippageConfig.from_env()
-    buy_slippage_rate = _slippage_cfg.buy_slippage_rate
-    sell_slippage_rate = _slippage_cfg.sell_slippage_rate
+    buy_slippage_rate = float(np.clip(_slippage_cfg.buy_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
+    sell_slippage_rate = float(np.clip(_slippage_cfg.sell_slippage_rate, 0.0, MAX_RUNTIME_SLIPPAGE_RATE))
+    if buy_slippage_rate != _slippage_cfg.buy_slippage_rate or sell_slippage_rate != _slippage_cfg.sell_slippage_rate:
+        logger.warning(
+            "[%s] slippage clipped at runtime: buy %.6f->%.6f, sell %.6f->%.6f",
+            stock_code,
+            _slippage_cfg.buy_slippage_rate,
+            buy_slippage_rate,
+            _slippage_cfg.sell_slippage_rate,
+            sell_slippage_rate,
+        )
 
     trades = []
     position = 0

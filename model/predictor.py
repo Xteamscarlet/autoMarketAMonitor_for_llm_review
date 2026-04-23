@@ -148,25 +148,43 @@ def _prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # ★ 新增收益率特征
     for lag in [1, 3, 5, 10]:
         temp[f'ret_{lag}'] = temp['Close'].pct_change(lag)
-    temp.bfill(inplace=True)
+    # Use forward-fill to avoid leaking future values into earlier rows.
+    temp.ffill(inplace=True)
     temp.dropna(inplace=True)
     return temp
 
 
-def _select_scaler(code: str, scalers: dict, global_scaler, features_data: np.ndarray):
+def _prepare_scaler_input(features_data) -> pd.DataFrame:
+    """Preserve feature names so sklearn transformers do not emit warning noise."""
+    if isinstance(features_data, pd.DataFrame):
+        return features_data.copy()
+    return pd.DataFrame(features_data, columns=FEATURES)
+
+
+def _transform_with_scaler(scaler, features_data) -> np.ndarray:
+    scaler_input = _prepare_scaler_input(features_data)
+    if hasattr(scaler, "feature_names_in_"):
+        scaler_input = scaler_input.reindex(columns=list(scaler.feature_names_in_), fill_value=0.0)
+    return np.asarray(scaler.transform(scaler_input), dtype=float)
+
+
+def _select_scaler(code: str, scalers: dict, global_scaler, features_data):
+    features_frame = _prepare_scaler_input(features_data)
+
     if code in scalers:
-        scaled = scalers[code].transform(features_data)
-        return np.clip(scaled, -5, 5), "专用"
+        scaled = _transform_with_scaler(scalers[code], features_frame)
+        return np.clip(scaled, -5, 5), "stock"
     elif global_scaler is not None:
-        scaled = global_scaler.transform(features_data)
-        return np.clip(scaled, -5, 5), "全局"
+        scaled = _transform_with_scaler(global_scaler, features_frame)
+        return np.clip(scaled, -5, 5), "global"
     else:
-        median = np.median(features_data, axis=0)
-        q75 = np.percentile(features_data, 75, axis=0)
-        q25 = np.percentile(features_data, 25, axis=0)
+        features_array = features_frame.to_numpy(dtype=float)
+        median = np.median(features_array, axis=0)
+        q75 = np.percentile(features_array, 75, axis=0)
+        q25 = np.percentile(features_array, 25, axis=0)
         iqr = np.clip(q75 - q25, 1e-6, None)
-        scaled = (features_data - median) / iqr
-        return np.clip(scaled, -5, 5), "在线标准化"
+        scaled = (features_array - median) / iqr
+        return np.clip(scaled, -5, 5), "online"
 
 
 def predict_stocks(target_codes: List[str], models: Optional[List] = None) -> pd.DataFrame:

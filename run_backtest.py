@@ -23,6 +23,7 @@ from data import (
     check_and_clean_cache, load_pickle_cache,
     calculate_orthogonal_factors, save_pickle_cache,
 )
+from data.cache import load_transformer_cache
 from data.types import NON_FACTOR_COLS
 from backtest.engine import run_backtest_loop, calculate_multi_timeframe_score
 from backtest.optimizer import (
@@ -39,19 +40,77 @@ _worker_market_data = None
 _worker_stocks_data = None
 
 
-def init_worker(m_data, s_data):
+def init_worker(m_data, s_data, preload_models: bool = False):
     global _worker_market_data, _worker_stocks_data
     _worker_market_data = m_data
     _worker_stocks_data = s_data
+    if preload_models:
+        try:
+            import torch
+            from model.predictor import _load_ensemble_models
+            _load_ensemble_models(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        except Exception:
+            pass
+
+
+def precompute_transformer_caches(stocks_data, settings) -> None:
+    if not settings.backtest.precompute_transformer_cache:
+        print("[Transformer预计算] 已关闭，直接进入回测。")
+        return
+
     try:
         import torch
-        from model.predictor import _load_ensemble_models
-        _load_ensemble_models(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     except Exception:
-        pass
+        device = None
+
+    cache_hits = 0
+    cache_misses = 0
+    failures = []
+
+    print("\n[2.5/3] 统一预计算 Transformer 因子缓存...")
+    if device is not None:
+        print(f"[Transformer预计算] 设备: {device}")
+
+    for stock_name, stock_code in STOCK_CODES.items():
+        df = stocks_data.get(stock_name)
+        if df is None or df.empty:
+            continue
+
+        valid_dates = df["Close"].dropna().index if "Close" in df.columns else df.index
+        current_last_date = valid_dates[-1] if len(valid_dates) > 0 else None
+        if current_last_date is None:
+            continue
+
+        cached_df = load_transformer_cache(stock_code, current_last_date)
+        if cached_df is not None:
+            cache_hits += 1
+            continue
+
+        try:
+            calculate_orthogonal_factors(
+                df.copy(),
+                stock_code=stock_code,
+                device=device,
+                allow_save_cache=True,
+            )
+            cache_misses += 1
+        except Exception as exc:
+            failures.append(f"{stock_name}({stock_code}): {exc}")
+
+    print(
+        f"[Transformer预计算] 完成 | 缓存命中={cache_hits} | 新生成={cache_misses} | 失败={len(failures)}"
+    )
+    for item in failures[:5]:
+        print(f"[Transformer预计算][失败] {item}")
 
 
-def _build_equity_curve(df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.Series:
+def _build_equity_curve(
+    df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    initial_cash: float = 100000.0,
+) -> pd.Series:
     """构建持仓策略的 equity 曲线（按日累乘）。
 
     ★ 修复2: 原实现用单步乘法 `equity[mask] = equity[mask] * (1 + daily)`，
@@ -61,7 +120,6 @@ def _build_equity_curve(df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.Series:
       2) cumprod 得到净值因子
       3) 乘以初始资金得到 equity 曲线
     """
-    initial_cash = 100000.0
     if trades_df is None or len(trades_df) == 0:
         return pd.Series(initial_cash, index=df.index)
 
@@ -70,7 +128,8 @@ def _build_equity_curve(df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.Series:
 
     for t in trades_df.itertuples():
         try:
-            holding_dates = df.loc[t.buy_date: t.sell_date].index
+            # Buy is executed on buy_date close; daily return exposure starts next trading day.
+            holding_dates = df.index[(df.index > t.buy_date) & (df.index <= t.sell_date)]
             position_status.loc[holding_dates] = 1.0
         except KeyError:
             pass
@@ -78,6 +137,81 @@ def _build_equity_curve(df: pd.DataFrame, trades_df: pd.DataFrame) -> pd.Series:
     daily_portfolio_ret = position_status * stock_daily_ret
     equity = (1.0 + daily_portfolio_ret).cumprod() * initial_cash
     return equity
+
+
+def _build_account_equity_curve(
+    df: pd.DataFrame,
+    trades_df: pd.DataFrame,
+    initial_cash: float = 100000.0,
+) -> pd.Series:
+    """Build account-level equity curve from cash flows + mark-to-market."""
+    if trades_df is None or len(trades_df) == 0:
+        return pd.Series(initial_cash, index=df.index)
+
+    df = df.sort_index()
+    trades = trades_df.sort_values(["buy_date", "sell_date"]).reset_index(drop=True).copy()
+
+    required_cols = {"buy_date", "sell_date", "shares", "actual_buy_cost", "actual_sell_proceeds"}
+    if not required_cols.issubset(set(trades.columns)):
+        return _build_equity_curve(df=df, trades_df=trades_df, initial_cash=initial_cash)
+
+    equity = pd.Series(index=df.index, dtype=float)
+    current_cash = float(initial_cash)
+    in_position = False
+    shares_held = 0
+    sell_date = None
+    current_trade = None
+    trade_ptr = 0
+
+    for date in df.index:
+        close_price = float(df.at[date, "Close"]) if pd.notna(df.at[date, "Close"]) else np.nan
+
+        if not in_position:
+            while trade_ptr < len(trades):
+                candidate_buy_date = pd.Timestamp(trades.at[trade_ptr, "buy_date"])
+                if candidate_buy_date < date:
+                    trade_ptr += 1
+                    continue
+                if candidate_buy_date > date:
+                    break
+
+                row = trades.iloc[trade_ptr]
+                shares_held = int(row.get("shares", 0) or 0)
+                buy_cost = float(row.get("actual_buy_cost", 0.0) or 0.0)
+                if shares_held >= 1 and buy_cost > 0 and buy_cost <= current_cash + 1e-6:
+                    current_cash -= buy_cost
+                    current_trade = row
+                    sell_date = pd.Timestamp(row["sell_date"])
+                    in_position = True
+                else:
+                    trade_ptr += 1
+                    current_trade = None
+                    sell_date = None
+                    shares_held = 0
+                break
+
+        if in_position:
+            mark_to_market = current_cash
+            if np.isfinite(close_price) and shares_held > 0:
+                mark_to_market = current_cash + shares_held * close_price
+
+            if date == sell_date:
+                sell_proceeds = float(current_trade.get("actual_sell_proceeds", 0.0) or 0.0)
+                if sell_proceeds > 0:
+                    current_cash += sell_proceeds
+                mark_to_market = current_cash
+
+                in_position = False
+                current_trade = None
+                sell_date = None
+                shares_held = 0
+                trade_ptr += 1
+
+            equity.loc[date] = mark_to_market
+        else:
+            equity.loc[date] = current_cash
+
+    return equity.ffill().fillna(initial_cash)
 
 
 def _build_benchmark_returns(market_data, df: pd.DataFrame) -> pd.Series:
@@ -145,6 +279,7 @@ def process_single_stock(args):
         best_params_list = []
         best_weights_list = []
         total_commissions = 0.0
+        rolling_capital = float(settings.backtest.initial_capital)
 
         for split_idx, split in enumerate(validated_splits):
             train_start, train_end, val_start, val_end, test_start, test_end = split
@@ -178,7 +313,9 @@ def process_single_stock(args):
 
             trades_df, stats, _ = run_backtest_loop(
                 test_df, stock_code, _worker_market_data,
-                best_weights, best_params_map, stocks_data=_worker_stocks_data
+                best_weights, best_params_map,
+                stocks_data=_worker_stocks_data,
+                initial_capital=rolling_capital,
             )
 
             if trades_df is None or len(trades_df) == 0:
@@ -190,6 +327,8 @@ def process_single_stock(args):
             all_trades.append(trades_df)
             best_params_list.append(best_params_map)
             best_weights_list.append(best_weights)
+            if stats is not None and stats.get("final_capital") is not None:
+                rolling_capital = float(stats["final_capital"])
 
         if not all_trades:
             return stock_code, None, None, None, None, None, None
@@ -212,7 +351,11 @@ def process_single_stock(args):
         else:
             combined_test_df = df.iloc[validated_splits[-1][4]:validated_splits[-1][5]]
 
-        equity_curve = _build_equity_curve(combined_test_df, combined_trades)
+        equity_curve = _build_account_equity_curve(
+            combined_test_df,
+            combined_trades,
+            initial_cash=settings.backtest.initial_capital,
+        )
         benchmark_returns = _build_benchmark_returns(_worker_market_data, combined_test_df)
 
         # 给报告打印用：保留最后一个 split 的起止日期作为"测试区间"展示
@@ -223,7 +366,7 @@ def process_single_stock(args):
             trades_df=combined_trades,
             equity_curve=equity_curve,
             benchmark_curve=benchmark_returns,
-            initial_cash=100000.0,
+            initial_cash=settings.backtest.initial_capital,
             commissions=total_commissions,
         )
 
@@ -266,6 +409,7 @@ def process_single_stock(args):
             'processed_len': len(df),
             'validated_splits': validated_splits,
             'test_start_idx': validated_splits[-1][4] if validated_splits else int(len(df) * 0.7),
+            'final_capital': rolling_capital,
         }
 
         return stock_code, strategy_dict, full_stats, df, combined_trades, validated_splits, metadata
@@ -314,6 +458,8 @@ if __name__ == "__main__":
     if not stocks_data:
         exit()
 
+    precompute_transformer_caches(stocks_data, settings)
+
     # 3. 并行回测
     print("\n[3/3] 开始策略优化与回测...")
 
@@ -325,6 +471,18 @@ if __name__ == "__main__":
         for name, code in clean_map.items()
     ]
 
+    regime_count = 5
+    estimated_trials = len(stock_list) * settings.backtest.n_optuna_trials * regime_count
+    print(
+        f"[优化规模] 股票数={len(stock_list)} | regime数={regime_count} | "
+        f"每个regime trials={settings.backtest.n_optuna_trials} | "
+        f"估算总trial数={estimated_trials}"
+    )
+    print(
+        f"[优化模式] 验证集复核={'开启' if settings.backtest.enable_val_validation else '关闭'} | "
+        f"expanding_window={settings.backtest.expanding_window}"
+    )
+
     # ★ 次要修复: GPU 推理多进程会让每个 worker 都把 ensemble 模型加载到同一张卡，
     # 12GB 显存会爆。GPU 时强制最多 2 进程；CPU 推理才放开多进程
     try:
@@ -333,15 +491,25 @@ if __name__ == "__main__":
     except Exception:
         gpu_available = False
 
+    reserved_cores = 2
+    use_processes = max(1, cpu_count() - reserved_cores)
     if gpu_available:
-        use_processes = min(2, max(1, cpu_count() - 1))
-        print(f"[多进程] 检测到 GPU，限制为 {use_processes} 进程以避免显存爆炸")
+        print(f"[多进程] 检测到 GPU，使用 {use_processes} 进程（总核心数 - {reserved_cores}）")
     else:
-        use_processes = max(1, cpu_count() - 1)
-        print(f"[多进程] CPU 模式，使用 {use_processes} 进程")
+        print(f"[多进程] CPU 模式，使用 {use_processes} 进程（总核心数 - {reserved_cores}）")
 
-    with Pool(processes=use_processes, initializer=init_worker, initargs=(market_data, stocks_data)) as pool:
-        raw_results = list(tqdm(pool.imap(process_single_stock, stock_list), total=len(stock_list), desc="进度"))
+    with Pool(
+        processes=use_processes,
+        initializer=init_worker,
+        initargs=(market_data, stocks_data, False),
+    ) as pool:
+        raw_results = list(
+            tqdm(
+                pool.imap_unordered(process_single_stock, stock_list),
+                total=len(stock_list),
+                desc="进度",
+            )
+        )
 
     # 4. 结果汇总
     results = [r for r in raw_results if len(r) == 7 and r[1] is not None]
@@ -403,17 +571,12 @@ if __name__ == "__main__":
             if strat is None or df is None or trades is None:
                 continue
 
-            stock_daily_ret = df['Close'].pct_change()
-            position_status = pd.Series(0, index=df.index)
-
-            for t in trades.itertuples():
-                try:
-                    holding_dates = df.loc[t.buy_date: t.sell_date].index
-                    position_status.loc[holding_dates] = 1
-                except KeyError:
-                    pass
-
-            strategy_daily_ret = position_status * stock_daily_ret
+            stock_equity = _build_account_equity_curve(
+                df=df,
+                trades_df=trades,
+                initial_cash=settings.backtest.initial_capital,
+            )
+            strategy_daily_ret = stock_equity.pct_change().reindex(portfolio.index).fillna(0.0)
             portfolio['return'] += strategy_daily_ret / n_valid
 
         portfolio['cum_ret'] = (1 + portfolio['return'].fillna(0)).cumprod()

@@ -32,43 +32,58 @@ def get_trading_day_status() -> Tuple[bool, str]:
 def check_and_clean_cache(cache_file: str) -> bool:
     """检查缓存文件是否有效，返回 True 表示缓存可用"""
     try:
+        settings = get_settings()
+
         if not os.path.exists(cache_file):
             return False
 
         with open(cache_file, 'rb') as f:
             data = pickle.load(f)
 
-        # ============ 关键修改：兼容 dict[str, DataFrame] 结构 ============
-        if isinstance(data, dict):
-            # 情况1：错误结构 {"stocks_data": {...}, "last_date": ...}
-            first_key = list(data.keys())[0]
-            if first_key in ['stocks_data', 'last_date', 'Date']:
+        def _handle_invalid_cache(reason: str) -> bool:
+            if settings.cache.auto_delete_invalid_cache and os.path.exists(cache_file):
                 os.remove(cache_file)
-                logger.warning(f"检测到错误的缓存结构，已删除: {cache_file}")
-                return False
-
-            # 情况2：正确结构 dict[str, DataFrame]，取第一个 DataFrame 的最后日期
-            first_value = data[first_key]
-            if isinstance(first_value, pd.DataFrame):
-                last_date = first_value.index[-1]
+                logger.warning(f"{reason}，已删除: {cache_file}")
             else:
-                os.remove(cache_file)
-                logger.warning(f"缓存值类型异常: {type(first_value)}，已删除: {cache_file}")
-                return False
+                logger.warning(f"{reason}，保留原文件: {cache_file}")
+            return False
+
+        if isinstance(data, dict):
+            if "stocks_data" in data:
+                stocks_data = data.get("stocks_data")
+                if not isinstance(stocks_data, dict) or not stocks_data:
+                    return _handle_invalid_cache("stocks_data 缓存结构异常")
+                first_df = next(
+                    (value for value in stocks_data.values() if isinstance(value, pd.DataFrame) and not value.empty),
+                    None,
+                )
+                if first_df is None:
+                    return _handle_invalid_cache("stocks_data 缓存中没有有效 DataFrame")
+                last_date = data.get("last_date") or first_df.index[-1]
+            elif "market_data" in data:
+                market_df = data.get("market_data")
+                if not isinstance(market_df, pd.DataFrame) or market_df.empty:
+                    return _handle_invalid_cache("market_data 缓存结构异常")
+                last_date = data.get("last_date") or market_df.index[-1]
+            else:
+                first_key = list(data.keys())[0]
+                first_value = data[first_key]
+                if isinstance(first_value, pd.DataFrame) and not first_value.empty:
+                    last_date = first_value.index[-1]
+                else:
+                    return _handle_invalid_cache(f"缓存值类型异常: {type(first_value)}")
         elif isinstance(data, pd.DataFrame):
-            # 情况3：单个 DataFrame（大盘数据）
             last_date = data.index[-1]
         else:
-            os.remove(cache_file)
-            logger.warning(f"未知缓存类型: {type(data)}，已删除: {cache_file}")
-            return False
-        # ==================================================================
+            return _handle_invalid_cache(f"未知缓存类型: {type(data)}")
+
         last_date = pd.to_datetime(last_date).date()
         today = datetime.now().date()
 
-        # ★ M5 修复：恢复缓存有效期检查
-        # 周末/节假日：数据最多滞后2天（周五数据周一才更新）
-        # 盘中：数据当天有效
+        if not settings.cache.strict_freshness_check:
+            logger.info(f"缓存存在，已跳过严格时效校验: {cache_file} (最后日期: {last_date})")
+            return True
+
         weekday = today.weekday()
         if weekday == 5:  # 周六
             max_staleness = timedelta(days=2)
@@ -86,7 +101,8 @@ def check_and_clean_cache(cache_file: str) -> bool:
 
     except Exception as e:
         logger.warning(f"缓存读取异常: {e}")
-        if os.path.exists(cache_file):
+        settings = get_settings()
+        if settings.cache.auto_delete_invalid_cache and os.path.exists(cache_file):
             os.remove(cache_file)
         return False
 
@@ -136,6 +152,34 @@ def get_transformer_cache_path(code: str) -> str:
     return os.path.join(settings.paths.cache_dir, f'transformer_factors_{code}.pkl')
 
 
+def _get_transformer_model_signature() -> str:
+    """Build a lightweight signature from model artifacts for cache invalidation."""
+    settings = get_settings()
+    signature_parts = []
+
+    candidate_paths = [
+        settings.paths.model_path,
+        settings.paths.swa_model_path,
+    ]
+    for path in candidate_paths:
+        if os.path.exists(path):
+            stat = os.stat(path)
+            signature_parts.append(f"{os.path.basename(path)}:{int(stat.st_mtime)}:{stat.st_size}")
+
+    topk_dir = settings.paths.topk_checkpoint_dir
+    if os.path.isdir(topk_dir):
+        for fname in sorted(os.listdir(topk_dir)):
+            if not fname.endswith(".pth"):
+                continue
+            full_path = os.path.join(topk_dir, fname)
+            stat = os.stat(full_path)
+            signature_parts.append(f"{fname}:{int(stat.st_mtime)}:{stat.st_size}")
+
+    if not signature_parts:
+        return "no-model-artifacts"
+    return "|".join(signature_parts)
+
+
 def load_transformer_cache(code: str, current_df_last_date) -> Optional[pd.DataFrame]:
     """加载 Transformer 因子缓存
 
@@ -159,6 +203,12 @@ def load_transformer_cache(code: str, current_df_last_date) -> Optional[pd.DataF
     try:
         with open(cache_path, 'rb') as f:
             cache = pickle.load(f)
+
+        cache_signature = cache.get('model_signature')
+        current_signature = _get_transformer_model_signature()
+        if cache_signature != current_signature:
+            os.remove(cache_path)
+            return None
 
         cache_last_date = _to_date(cache.get('last_date'))
         curr_date = _to_date(current_df_last_date)
@@ -188,7 +238,14 @@ def save_transformer_cache(code: str, last_date, result_df: pd.DataFrame):
             pass
 
         with open(tmp_path, 'wb') as f:
-            pickle.dump({'last_date': last_date, 'df': result_df}, f)
+            pickle.dump(
+                {
+                    'last_date': last_date,
+                    'df': result_df,
+                    'model_signature': _get_transformer_model_signature(),
+                },
+                f,
+            )
 
         os.replace(tmp_path, cache_path)
 
