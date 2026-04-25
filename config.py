@@ -145,6 +145,8 @@ class ModelConfig:
     # ★ 修复1: 早停参数迁入 config 集中管理
     early_stop_patience: int = 6     # 7 → 30 epoch 配 6 patience
     early_stop_min_delta: float = 0.0005
+    convergence_patience: int = 3
+    convergence_min_delta: float = 0.02
     swa_start_ratio: float = 0.5     # ★ 修复1: 0.6 → 0.5，让 SWA 至少累积一半 epoch
     # ★ 修复5: 收益率标准化系数（rets 除以该值后送入 SmoothL1Loss）
     ret_target_scale: float = 0.05
@@ -153,6 +155,25 @@ class ModelConfig:
     mc_forward_train: int = 10     # 训练/实盘 MC Dropout 采样次数
     mc_forward_backtest: int = 3   # 回测时降低采样次数加�?
     inference_batch_size: int = 64 # 批量推理 batch size
+    focal_gamma: float = 1.5
+    cls_loss_weight_initial: float = 1.3
+    cls_loss_weight_final: float = 1.0
+    ret_loss_weight_initial: float = 0.05
+    ret_loss_weight_final: float = 0.20
+    cls_time_weight_power: float = 0.5
+    ret_time_weight_power: float = 1.0
+    use_balanced_sampler: bool = True
+    sampler_class_power: float = 1.0
+    sampler_time_power: float = 0.3
+    sampler_min_weight: float = 0.05
+    sampler_max_weight: float = 20.0
+    sampler_replacement: bool = True
+    head_diag_enabled: bool = True
+    head_diag_interval: int = 1
+    head_diag_max_batches: int = 32
+    head_diag_cls_dominance_warn: float = 0.85
+    head_diag_prob_std_warn: float = 0.02
+    head_diag_ret_std_warn: float = 0.003
 
     @classmethod
     def from_env(cls) -> "ModelConfig":
@@ -179,11 +200,32 @@ class ModelConfig:
             time_decay_rate=_env_float("TIME_DECAY_RATE", 0.001),
             early_stop_patience=_env_int("EARLY_STOP_PATIENCE", 6),
             early_stop_min_delta=_env_float("EARLY_STOP_MIN_DELTA", 0.0005),
+            convergence_patience=_env_int("CONVERGENCE_PATIENCE", 3),
+            convergence_min_delta=_env_float("CONVERGENCE_MIN_DELTA", 0.02),
             swa_start_ratio=_env_float("SWA_START_RATIO", 0.5),
             ret_target_scale=_env_float("RET_TARGET_SCALE", 0.05),
             mc_forward_train=_env_int("MC_FORWARD_TRAIN", 10),
             mc_forward_backtest=_env_int("MC_FORWARD_BACKTEST", 3),
             inference_batch_size=_env_int("INFERENCE_BATCH_SIZE", 64),
+            focal_gamma=_env_float("FOCAL_GAMMA", 1.5),
+            cls_loss_weight_initial=_env_float("CLS_LOSS_WEIGHT_INITIAL", 1.3),
+            cls_loss_weight_final=_env_float("CLS_LOSS_WEIGHT_FINAL", 1.0),
+            ret_loss_weight_initial=_env_float("RET_LOSS_WEIGHT_INITIAL", 0.05),
+            ret_loss_weight_final=_env_float("RET_LOSS_WEIGHT_FINAL", 0.20),
+            cls_time_weight_power=_env_float("CLS_TIME_WEIGHT_POWER", 0.5),
+            ret_time_weight_power=_env_float("RET_TIME_WEIGHT_POWER", 1.0),
+            use_balanced_sampler=_env_bool("USE_BALANCED_SAMPLER", True),
+            sampler_class_power=_env_float("SAMPLER_CLASS_POWER", 1.0),
+            sampler_time_power=_env_float("SAMPLER_TIME_POWER", 0.3),
+            sampler_min_weight=_env_float("SAMPLER_MIN_WEIGHT", 0.05),
+            sampler_max_weight=_env_float("SAMPLER_MAX_WEIGHT", 20.0),
+            sampler_replacement=_env_bool("SAMPLER_REPLACEMENT", True),
+            head_diag_enabled=_env_bool("HEAD_DIAG_ENABLED", True),
+            head_diag_interval=max(1, _env_int("HEAD_DIAG_INTERVAL", 1)),
+            head_diag_max_batches=max(1, _env_int("HEAD_DIAG_MAX_BATCHES", 32)),
+            head_diag_cls_dominance_warn=_env_float("HEAD_DIAG_CLS_DOMINANCE_WARN", 0.85),
+            head_diag_prob_std_warn=_env_float("HEAD_DIAG_PROB_STD_WARN", 0.02),
+            head_diag_ret_std_warn=_env_float("HEAD_DIAG_RET_STD_WARN", 0.003),
         )
 
 
@@ -319,6 +361,7 @@ class LLMConfig:
     model: str = "gpt-4o-mini"
     timeout_seconds: int = 45
     max_prompt_chars: int = 12000
+    disable_proxy: bool = False
     thinking_enabled: bool = False
     thinking_type: str = "enabled"
 
@@ -333,6 +376,7 @@ class LLMConfig:
             model=_env("OPENAI_MODEL", "gpt-4o-mini"),
             timeout_seconds=_env_int("LLM_TIMEOUT_SECONDS", 45),
             max_prompt_chars=_env_int("LLM_MAX_PROMPT_CHARS", 12000),
+            disable_proxy=_env_bool("LLM_DISABLE_PROXY", False),
             thinking_enabled=_env_bool("LLM_THINKING_ENABLED", False),
             thinking_type=_env("LLM_THINKING_TYPE", "enabled"),
         )

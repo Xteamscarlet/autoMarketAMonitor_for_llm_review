@@ -172,6 +172,19 @@ def main():
     console_print(f"  Dropout: {settings.model.dropout}")
     console_print(f"  Accumulation: {settings.model.accumulation_steps} steps")
     console_print(f"  EMA Decay: {settings.model.ema_decay}")
+    console_print(
+        f"  HeadDiag: enabled={settings.model.head_diag_enabled}, "
+        f"interval={settings.model.head_diag_interval}, max_batches={settings.model.head_diag_max_batches}"
+    )
+    console_print(
+        f"  Loss Weights: cls {settings.model.cls_loss_weight_initial:.2f}->{settings.model.cls_loss_weight_final:.2f}, "
+        f"ret {settings.model.ret_loss_weight_initial:.2f}->{settings.model.ret_loss_weight_final:.2f}, "
+        f"focal_gamma={settings.model.focal_gamma:.2f}"
+    )
+    console_print(
+        f"  Sampler: balanced={settings.model.use_balanced_sampler}, "
+        f"class_power={settings.model.sampler_class_power:.2f}, time_power={settings.model.sampler_time_power:.2f}"
+    )
     console_print("=" * 60)
 
     if args.dry_run:
