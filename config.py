@@ -145,8 +145,8 @@ class ModelConfig:
     # ★ 修复1: 早停参数迁入 config 集中管理
     early_stop_patience: int = 6     # 7 → 30 epoch 配 6 patience
     early_stop_min_delta: float = 0.0005
-    convergence_patience: int = 3
-    convergence_min_delta: float = 0.02
+    convergence_patience: int = 5
+    convergence_min_delta: float =0.003
     swa_start_ratio: float = 0.5     # ★ 修复1: 0.6 → 0.5，让 SWA 至少累积一半 epoch
     # ★ 修复5: 收益率标准化系数（rets 除以该值后送入 SmoothL1Loss）
     ret_target_scale: float = 0.05
@@ -200,8 +200,8 @@ class ModelConfig:
             time_decay_rate=_env_float("TIME_DECAY_RATE", 0.001),
             early_stop_patience=_env_int("EARLY_STOP_PATIENCE", 6),
             early_stop_min_delta=_env_float("EARLY_STOP_MIN_DELTA", 0.0005),
-            convergence_patience=_env_int("CONVERGENCE_PATIENCE", 3),
-            convergence_min_delta=_env_float("CONVERGENCE_MIN_DELTA", 0.02),
+            convergence_patience=_env_int("CONVERGENCE_PATIENCE", 5),
+            convergence_min_delta=_env_float("CONVERGENCE_MIN_DELTA", 0.003),
             swa_start_ratio=_env_float("SWA_START_RATIO", 0.5),
             ret_target_scale=_env_float("RET_TARGET_SCALE", 0.05),
             mc_forward_train=_env_int("MC_FORWARD_TRAIN", 10),
