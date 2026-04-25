@@ -60,12 +60,21 @@ class OpenAICompatibleClient:
             "Content-Type": "application/json",
         }
         url = self.cfg.base_url.rstrip("/") + "/chat/completions"
-        response = requests.post(
-            url,
-            headers=headers,
-            data=json.dumps(payload),
-            timeout=self.cfg.timeout_seconds,
-        )
+        with requests.Session() as session:
+            # Optional hard switch to ignore HTTP(S)_PROXY from environment.
+            request_kwargs = {}
+            if self.cfg.disable_proxy:
+                session.trust_env = False
+                session.proxies.clear()
+                request_kwargs["proxies"] = {"http": None, "https": None}
+
+            response = session.post(
+                url,
+                headers=headers,
+                data=json.dumps(payload),
+                timeout=self.cfg.timeout_seconds,
+                **request_kwargs,
+            )
         response.raise_for_status()
         body = response.json()
         content = body["choices"][0]["message"]["content"]

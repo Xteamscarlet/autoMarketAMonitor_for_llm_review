@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 import pandas as pd
 
 from config import get_settings
-from llm import LLMUnavailableError, OpenAICompatibleClient
+from llm import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +135,7 @@ def analyze_technicals(df: pd.DataFrame, code: str, name: str = "", refresh: boo
     snapshot = _build_snapshot(df.tail(settings.analysis.max_recent_days_for_technical), code=code, name=name)
     try:
         result = _llm_analysis(snapshot) if settings.llm.enabled else _rule_based_analysis(snapshot)
-    except (LLMUnavailableError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except Exception as exc:
         logger.warning("Technical LLM analysis failed for %s: %s", code, exc)
         result = _rule_based_analysis(snapshot)
 

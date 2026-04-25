@@ -159,7 +159,65 @@ def _compute_research_bonus(settings, research: Dict) -> float:
     return float(bonus)
 
 
-def run_advisor() -> None:
+def _safe_float(value: object) -> Optional[float]:
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(num):
+        return None
+    return num
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    parsed = _safe_float(raw)
+    return default if parsed is None else float(parsed)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _compute_transformer_contribution(latest: pd.Series, weights: Dict) -> float:
+    contrib = 0.0
+    for factor, weight in (weights or {}).items():
+        if not str(factor).startswith("transformer_"):
+            continue
+        weight_f = _safe_float(weight)
+        if weight_f is None or weight_f == 0:
+            continue
+        factor_value = latest.get(factor)
+        value_f = _safe_float(factor_value)
+        if value_f is None:
+            continue
+        contrib += (value_f - 0.5) * 2.0 * weight_f
+    return float(contrib)
+
+
+def _detect_transformer_collapse(prepared_rows: List[Dict], std_floor: float, min_count: int) -> Dict:
+    probs = [row["transformer_prob"] for row in prepared_rows if row.get("transformer_prob") is not None]
+    count = len(probs)
+    if count == 0:
+        return {"active": False, "count": 0, "std": None, "min": None, "max": None}
+
+    arr = np.asarray(probs, dtype=float)
+    std = float(np.std(arr))
+    min_prob = float(np.min(arr))
+    max_prob = float(np.max(arr))
+    active = bool(count >= min_count and np.isfinite(std) and std < std_floor)
+    return {"active": active, "count": count, "std": std, "min": min_prob, "max": max_prob}
+
+
+def run_advisor(force_rebalance: bool = False) -> None:
     settings = get_settings()
 
     print("\n" + "=" * 60)
@@ -173,11 +231,13 @@ def run_advisor() -> None:
     print(f"技术面 Agent: {'开启' if settings.analysis.enable_technical_agent else '关闭'}")
     print("=" * 60)
 
-    if not should_rebalance_today(settings):
+    if not force_rebalance and not should_rebalance_today(settings):
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"[{now_str}] 非调仓日，本次跳过。")
         _dry_run_without_rebalance(settings)
         return
+    if force_rebalance:
+        logger.warning("已启用强制调仓模式：跳过调仓日检查。")
 
     init_portfolio_file()
 
@@ -209,13 +269,15 @@ def run_advisor() -> None:
     buy_candidates: List[Dict] = []
     current_positions: List[Dict] = []
     existing_codes = [code for code, pos in portfolio_data.items() if float(pos.get("buy_price", 0)) > 0]
+    transformer_std_floor = max(_env_float("ADVISOR_TRANSFORMER_STD_FLOOR", 0.01), 0.0)
+    transformer_min_count = max(_env_int("ADVISOR_TRANSFORMER_MIN_COUNT", 8), 1)
+    transformer_drop_ratio = float(np.clip(_env_float("ADVISOR_TRANSFORMER_DROP_RATIO", 1.0), 0.0, 1.0))
 
+    factor_cache: Dict[str, Dict] = {}
+    transformer_rows: List[Dict] = []
     for code, pos_info in portfolio_data.items():
         name = pos_info.get("name", "")
-        buy_price = float(pos_info.get("buy_price", 0) or 0)
-        buy_date_str = pos_info.get("buy_date", "")
         stock_config = strategies.get(code)
-
         if not stock_config or name not in stocks_data:
             continue
 
@@ -232,8 +294,67 @@ def run_advisor() -> None:
             df = calculate_orthogonal_factors(df, code)
             df = calculate_multi_timeframe_score(df, weights)
             latest = df.iloc[-1]
-            current_price = float(latest["Close"])
-            base_score = float(latest.get("Combined_Score", 0.5))
+            base_score_raw = float(latest.get("Combined_Score", 0.5))
+            current_price = _safe_float(latest.get("Close"))
+            if current_price is None or current_price <= 0:
+                continue
+            transformer_prob = _safe_float(latest.get("transformer_prob", 0.5))
+            if transformer_prob is None:
+                transformer_prob = 0.5
+
+            factor_cache[code] = {
+                "df": df,
+                "latest": latest,
+                "current_price": float(current_price),
+                "base_score_raw": base_score_raw,
+                "transformer_prob": transformer_prob,
+                "transformer_contrib": _compute_transformer_contribution(latest, weights),
+            }
+            transformer_rows.append({"transformer_prob": transformer_prob})
+        except Exception as exc:
+            logger.exception("%s (%s) factor precompute failed: %s", name, code, exc)
+
+    transformer_stats = _detect_transformer_collapse(transformer_rows, transformer_std_floor, transformer_min_count)
+    transformer_guardrail_active = bool(transformer_stats.get("active")) and transformer_drop_ratio > 0
+    if transformer_guardrail_active:
+        std_val = transformer_stats.get("std", 0.0)
+        logger.warning(
+            "Transformer guardrail active: std=%.6f < %.6f, n=%d, drop_ratio=%.2f",
+            float(std_val),
+            transformer_std_floor,
+            int(transformer_stats.get("count", 0)),
+            transformer_drop_ratio,
+        )
+        print(
+            f"[Guardrail] transformer_prob std={float(std_val):.6f} (< {transformer_std_floor:.4f}), "
+            f"降权比例={transformer_drop_ratio:.0%}"
+        )
+
+    for code, pos_info in portfolio_data.items():
+        name = pos_info.get("name", "")
+        buy_price = float(pos_info.get("buy_price", 0) or 0)
+        buy_date_str = pos_info.get("buy_date", "")
+        stock_config = strategies.get(code)
+
+        if not stock_config or name not in stocks_data:
+            continue
+
+        params = _select_regime_params(stock_config, regime_info.regime)
+        if not params:
+            continue
+        cached = factor_cache.get(code)
+        if not cached:
+            continue
+
+        try:
+            df = cached["df"].copy()
+            latest = cached["latest"]
+            current_price = float(cached["current_price"])
+            base_score_raw = float(cached["base_score_raw"])
+            transformer_adjustment = 0.0
+            if transformer_guardrail_active:
+                transformer_adjustment = float(cached.get("transformer_contrib", 0.0)) * transformer_drop_ratio
+            base_score = base_score_raw - transformer_adjustment
 
             if buy_price > 0:
                 buy_date = datetime.strptime(buy_date_str, "%Y-%m-%d") if buy_date_str else datetime.now()
@@ -360,6 +481,8 @@ def run_advisor() -> None:
                     "price": current_price,
                     "score": round(enhanced_score, 4),
                     "base_score": round(base_score, 4),
+                    "base_score_raw": round(base_score_raw, 4),
+                    "transformer_adjustment": round(transformer_adjustment, 4),
                     "research_bonus": round(research_bonus, 4),
                     "threshold": params.get("buy_threshold", 0.6),
                     "level": level,
@@ -372,6 +495,8 @@ def run_advisor() -> None:
                     "technical_score_ai": technicals.get("score"),
                     "technical_summary_ai": technicals.get("summary"),
                     "transformer_score": latest.get("transformer_prob", 0.5),
+                    "transformer_conf": latest.get("transformer_conf", 0.0),
+                    "transformer_pred_ret_raw": latest.get("transformer_pred_ret_raw", latest.get("transformer_pred_ret", 0.0)),
                     "sector": SECTOR_MAP.get(code, "unknown"),
                 }
             )
@@ -408,6 +533,11 @@ def run_advisor() -> None:
             f"现价: {item['price']:.2f} | 增强得分: {item['score']:.3f} "
             f"(基础: {item['base_score']:.3f}, research_bonus: {item['research_bonus']:+.3f}, 阈值: {item['threshold']:.2f})"
         )
+        if abs(float(item.get("transformer_adjustment", 0.0))) > 1e-8:
+            print(
+                f"Transformer adjustment: {float(item['transformer_adjustment']):+.4f} "
+                f"(raw: {float(item.get('base_score_raw', item['base_score'])):.3f} -> used: {item['base_score']:.3f})"
+            )
         if item.get("fundamental_score") is not None:
             print(f"基本面: {float(item['fundamental_score']):.2f} | {item.get('fundamental_summary') or '无'}")
         if item.get("technical_score_ai") is not None:
@@ -415,5 +545,7 @@ def run_advisor() -> None:
         print(
             f"建议仓位: {item['position_ratio'] * 100:.1f}% | "
             f"建议买入: {item['recommended_shares']:,} 股 | "
-            f"Transformer 概率: {float(item['transformer_score']):.2f}"
+            f"Transformer 概率: {float(item['transformer_score']):.4f} | "
+            f"Conf: {float(item.get('transformer_conf', 0.0)):.4f} | "
+            f"PredRet: {float(item.get('transformer_pred_ret_raw', 0.0)) * 100:+.3f}%"
         )

@@ -38,6 +38,148 @@ from model.transformer import StockTransformer
 logger = logging.getLogger(__name__)
 
 
+def _format_ratio(counts: np.ndarray) -> str:
+    total = int(np.sum(counts))
+    if total <= 0:
+        return "n/a"
+    parts = []
+    for i, c in enumerate(counts.astype(int).tolist()):
+        pct = c / total * 100
+        parts.append(f"{i}:{c}({pct:.1f}%)")
+    return " ".join(parts)
+
+
+def _build_head_diag(
+    labels: List[int],
+    probs: List[np.ndarray],
+    logits: List[np.ndarray],
+    ret_pred: List[np.ndarray],
+    ret_true: List[np.ndarray],
+    num_classes: int = 4,
+) -> Optional[Dict[str, object]]:
+    if not labels or not probs:
+        return None
+
+    labels_np = np.asarray(labels, dtype=np.int64)
+    probs_np = np.concatenate(probs, axis=0).astype(np.float64, copy=False)
+    logits_np = np.concatenate(logits, axis=0).astype(np.float64, copy=False)
+    ret_pred_np = np.concatenate(ret_pred, axis=0).astype(np.float64, copy=False)
+    ret_true_np = np.concatenate(ret_true, axis=0).astype(np.float64, copy=False)
+
+    if probs_np.ndim != 2 or probs_np.shape[1] != num_classes:
+        return None
+
+    pred_cls = np.argmax(probs_np, axis=1)
+    label_counts = np.bincount(labels_np, minlength=num_classes)
+    pred_counts = np.bincount(pred_cls, minlength=num_classes)
+    pred_share = pred_counts / max(int(pred_counts.sum()), 1)
+    dominant_cls = int(np.argmax(pred_share))
+    dominant_share = float(pred_share[dominant_cls])
+
+    up_prob = probs_np[:, 2] + probs_np[:, 3]
+    top1_prob = np.max(probs_np, axis=1)
+    probs_entropy = -np.sum(probs_np * np.log(np.clip(probs_np, 1e-8, 1.0)), axis=1)
+
+    ret_mask = np.isfinite(ret_pred_np) & np.isfinite(ret_true_np)
+    if ret_mask.sum() > 8:
+        rp = ret_pred_np[ret_mask]
+        rt = ret_true_np[ret_mask]
+        if np.std(rp) > 1e-12 and np.std(rt) > 1e-12:
+            ret_corr = float(np.corrcoef(rp, rt)[0, 1])
+        else:
+            ret_corr = float("nan")
+    else:
+        ret_corr = float("nan")
+
+    return {
+        "samples": int(labels_np.shape[0]),
+        "label_dist": _format_ratio(label_counts),
+        "pred_dist": _format_ratio(pred_counts),
+        "dominant_cls": dominant_cls,
+        "dominant_share": dominant_share,
+        "logit_abs_mean": float(np.mean(np.abs(logits_np))),
+        "logit_std": float(np.std(logits_np)),
+        "up_prob_mean": float(np.mean(up_prob)),
+        "up_prob_std": float(np.std(up_prob)),
+        "top1_prob_mean": float(np.mean(top1_prob)),
+        "entropy_mean": float(np.mean(probs_entropy)),
+        "ret_pred_mean": float(np.mean(ret_pred_np)),
+        "ret_pred_std": float(np.std(ret_pred_np)),
+        "ret_true_mean": float(np.mean(ret_true_np)),
+        "ret_true_std": float(np.std(ret_true_np)),
+        "ret_corr": ret_corr,
+        "up_prob_p05": float(np.percentile(up_prob, 5)),
+        "up_prob_p50": float(np.percentile(up_prob, 50)),
+        "up_prob_p95": float(np.percentile(up_prob, 95)),
+        "ret_pred_p05": float(np.percentile(ret_pred_np, 5)),
+        "ret_pred_p50": float(np.percentile(ret_pred_np, 50)),
+        "ret_pred_p95": float(np.percentile(ret_pred_np, 95)),
+    }
+
+
+def _log_head_diag(epoch: int, stage: str, diag: Optional[Dict[str, object]], mc) -> None:
+    if not diag:
+        return
+    collapse_flags = []
+    if diag["dominant_share"] >= mc.head_diag_cls_dominance_warn:
+        collapse_flags.append(f"class_dom={diag['dominant_share']:.3f}")
+    if diag["up_prob_std"] <= mc.head_diag_prob_std_warn:
+        collapse_flags.append(f"up_prob_std={diag['up_prob_std']:.4f}")
+    if diag["ret_pred_std"] <= mc.head_diag_ret_std_warn:
+        collapse_flags.append(f"ret_std={diag['ret_pred_std']:.5f}")
+
+    flag_text = " | collapse_warn=" + ",".join(collapse_flags) if collapse_flags else ""
+    logger.warning(
+        f"[HeadDiag][Epoch {epoch}][{stage}] n={diag['samples']} "
+        f"label={diag['label_dist']} pred={diag['pred_dist']} "
+        f"up_prob(mean/std/p95)={diag['up_prob_mean']:.4f}/{diag['up_prob_std']:.4f}/{diag['up_prob_p95']:.4f} "
+        f"ret_pred(mean/std/p95)={diag['ret_pred_mean']:+.5f}/{diag['ret_pred_std']:.5f}/{diag['ret_pred_p95']:+.5f} "
+        f"ret_true(std)={diag['ret_true_std']:.5f} corr={diag['ret_corr']:.4f} "
+        f"logit(abs_mean/std)={diag['logit_abs_mean']:.4f}/{diag['logit_std']:.4f}{flag_text}"
+    )
+
+
+def _build_balanced_sampler(dataset, mc) -> Tuple[Optional[WeightedRandomSampler], Optional[np.ndarray]]:
+    if not getattr(mc, "use_balanced_sampler", False):
+        return None, None
+    if not hasattr(dataset, "index_map") or not dataset.index_map:
+        return None, None
+    if not hasattr(dataset, "weights_array"):
+        return None, None
+
+    labels = np.asarray([int(item[3]) for item in dataset.index_map], dtype=np.int64)
+    label_counts = np.bincount(labels, minlength=4).astype(np.float64)
+    safe_counts = np.maximum(label_counts, 1.0)
+
+    class_power = max(float(getattr(mc, "sampler_class_power", 1.0)), 0.0)
+    class_weights = np.power(safe_counts, -class_power)
+    class_weights = class_weights / np.mean(class_weights)
+    sample_cls_weights = class_weights[labels]
+
+    time_idx = np.asarray(
+        [int(item[1]) + int(dataset.lookback_days) for item in dataset.index_map],
+        dtype=np.int64,
+    )
+    time_idx = np.clip(time_idx, 0, len(dataset.weights_array) - 1)
+    time_weights = dataset.weights_array[time_idx].astype(np.float64)
+    time_weights = np.clip(time_weights, 1e-6, None)
+    time_power = max(float(getattr(mc, "sampler_time_power", 0.0)), 0.0)
+    sample_time_weights = np.power(time_weights, time_power)
+
+    sample_weights = sample_cls_weights * sample_time_weights
+    min_w = max(float(getattr(mc, "sampler_min_weight", 0.05)), 1e-8)
+    max_w = max(float(getattr(mc, "sampler_max_weight", 20.0)), min_w)
+    sample_weights = np.clip(sample_weights, min_w, max_w)
+    sample_weights = sample_weights / max(np.mean(sample_weights), 1e-8)
+
+    sampler = WeightedRandomSampler(
+        weights=torch.as_tensor(sample_weights, dtype=torch.double),
+        num_samples=len(sample_weights),
+        replacement=bool(getattr(mc, "sampler_replacement", True)),
+    )
+    return sampler, sample_weights
+
+
 # ==================== Focal Loss ====================
 
 class FocalLoss(nn.Module):
@@ -359,6 +501,7 @@ class MultiStockDatasetV2(torch.utils.data.Dataset):
         label_counts = np.zeros(4)
         for _, _, _, label in self.index_map:
             label_counts[label] += 1
+        self.label_counts = label_counts.astype(np.int64)
         total = label_counts.sum()
         if total > 0:
             self.class_weights = np.clip(total / (4 * label_counts + 1), 0.5, 3.0)
@@ -473,8 +616,8 @@ class WeightedMultiStockDatasetV2(MultiStockDatasetV2):
 # ==================== 数据集 V2 ====================
 
 def _compute_epoch_metrics(
-    model, data_loader, device, loss_fn, ret_loss_weight,
-    amp_dtype, ret_scale=0.05, prefix="val",
+    model, data_loader, device, loss_fn, cls_loss_weight, ret_loss_weight,
+    amp_dtype, ret_scale=0.05, prefix="val", diag_max_batches: int = 0,
 ):
     """Compute full epoch metrics: loss + cls_accuracy + macro_F1 + up/down precision + ret MAE + ret IC"""
     from sklearn.metrics import accuracy_score, f1_score, precision_score
@@ -484,6 +627,12 @@ def _compute_epoch_metrics(
     total_loss = total_cls_loss = total_ret_loss = 0.0
     all_labels, all_preds = [], []
     all_ret_true, all_ret_pred = [], []
+    diag_labels: List[int] = []
+    diag_probs: List[np.ndarray] = []
+    diag_logits: List[np.ndarray] = []
+    diag_ret_pred: List[np.ndarray] = []
+    diag_ret_true: List[np.ndarray] = []
+    diag_batches = 0
     valid_batches = 0
 
     with torch.no_grad():
@@ -496,11 +645,14 @@ def _compute_epoch_metrics(
                 logits, ret_pred = model(seq)
                 if torch.isnan(logits).any() or torch.isnan(ret_pred).any():
                     continue
-                loss_cls = loss_fn(logits, lab, sample_weights=weights).mean()
+                cls_w = torch.pow(weights, max(float(getattr(loss_fn, "cls_time_weight_power", 1.0)), 0.0))
+                ret_w = torch.pow(weights, max(float(getattr(loss_fn, "ret_time_weight_power", 1.0)), 0.0))
+                loss_cls = loss_fn(logits, lab, sample_weights=cls_w).mean()
                 rets_norm = rets / ret_scale
                 loss_ret = nn.SmoothL1Loss(reduction='none')(ret_pred.squeeze(), rets_norm.squeeze())
-                loss_ret = (loss_ret * weights).mean()
-                loss = loss_cls + ret_loss_weight * loss_ret
+                loss_ret = (loss_ret * ret_w).mean()
+                loss = cls_loss_weight * loss_cls + ret_loss_weight * loss_ret
+                probs = torch.softmax(logits, dim=-1)
             total_loss += loss.item()
             total_cls_loss += loss_cls.item()
             total_ret_loss += loss_ret.item()
@@ -509,6 +661,14 @@ def _compute_epoch_metrics(
             all_labels.extend(lab.cpu().numpy().tolist())
             all_ret_pred.extend((ret_pred.squeeze() * ret_scale).cpu().numpy().tolist())
             all_ret_true.extend(rets.squeeze().cpu().numpy().tolist())
+
+            if diag_max_batches > 0 and diag_batches < diag_max_batches:
+                diag_labels.extend(lab.cpu().numpy().astype(np.int64).tolist())
+                diag_probs.append(probs.detach().cpu().numpy())
+                diag_logits.append(logits.detach().cpu().numpy())
+                diag_ret_pred.append((ret_pred.squeeze() * ret_scale).detach().cpu().reshape(-1).numpy())
+                diag_ret_true.append(rets.squeeze().detach().cpu().reshape(-1).numpy())
+                diag_batches += 1
 
     inf = float('inf')
     if valid_batches == 0:
@@ -540,6 +700,15 @@ def _compute_epoch_metrics(
             result[prefix + '_ret_ic'] = float(ic) if not np.isnan(ic) else 0.0
         except: result[prefix + '_ret_ic'] = 0.0
     else: result[prefix + '_ret_ic'] = 0.0
+
+    if diag_max_batches > 0:
+        result[prefix + '_head_diag'] = _build_head_diag(
+            labels=diag_labels,
+            probs=diag_probs,
+            logits=diag_logits,
+            ret_pred=diag_ret_pred,
+            ret_true=diag_ret_true,
+        )
     return result
 
 
@@ -628,17 +797,26 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         train_part = group.iloc[:train_size].copy()
         val_part = group.iloc[train_size:].copy()
 
+        numeric_feature_cols = [col for col in FEATURES if col in train_part.columns]
+        for col in numeric_feature_cols:
+            # Ensure numeric dtype before quantile/clip to avoid pandas downcast warnings.
+            train_part[col] = pd.to_numeric(train_part[col], errors='coerce')
+            if col in val_part.columns:
+                val_part[col] = pd.to_numeric(val_part[col], errors='coerce')
+
         # Use train-only quantiles for clipping to avoid leaking validation-period distribution.
-        for col in FEATURES:
-            if col not in train_part.columns:
-                continue
+        for col in numeric_feature_cols:
             q01 = train_part[col].quantile(0.02)
             q99 = train_part[col].quantile(0.98)
             if np.isnan(q01) or np.isnan(q99):
                 continue
-            train_part[col] = train_part[col].clip(q01, q99)
+            train_part[col] = np.clip(
+                train_part[col].to_numpy(dtype=np.float32, copy=False), q01, q99
+            )
             if col in val_part.columns:
-                val_part[col] = val_part[col].clip(q01, q99)
+                val_part[col] = np.clip(
+                    val_part[col].to_numpy(dtype=np.float32, copy=False), q01, q99
+                )
 
         train_features = train_part[FEATURES].values
 
@@ -724,12 +902,30 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     # 获取类别权重用于 Focal Loss
     class_weights = torch.FloatTensor(train_dataset.class_weights).to(device)
+    logger.info(f"train_label_counts: {_format_ratio(train_dataset.label_counts)}")
+    logger.info(f"val_label_counts: {_format_ratio(val_dataset.label_counts)}")
     logger.info(f"类别权重: {class_weights.cpu().numpy()}")
 
     logger.info(f"训练集: {len(train_dataset)} 序列 | 验证集: {len(val_dataset)} 序列")
 
+    train_sampler, sample_weights = _build_balanced_sampler(train_dataset, mc)
+    if train_sampler is not None and sample_weights is not None:
+        logger.warning(
+            "Balanced sampler enabled: class_power=%.2f time_power=%.2f replacement=%s "
+            "sample_w(mean/std/min/max)=%.3f/%.3f/%.3f/%.3f",
+            mc.sampler_class_power,
+            mc.sampler_time_power,
+            mc.sampler_replacement,
+            float(np.mean(sample_weights)),
+            float(np.std(sample_weights)),
+            float(np.min(sample_weights)),
+            float(np.max(sample_weights)),
+        )
+    else:
+        logger.warning("Balanced sampler disabled: using shuffled batches")
+
     train_loader = DataLoader(
-        train_dataset, batch_size=mc.batch_size, shuffle=True,
+        train_dataset, batch_size=mc.batch_size, shuffle=(train_sampler is None), sampler=train_sampler,
         num_workers=4, persistent_workers=True, prefetch_factor=2, pin_memory=True,
     )
     val_loader = DataLoader(
@@ -788,13 +984,26 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     # 修复: Focal Loss 替代 CrossEntropyLoss
     focal_loss_fn = FocalLoss(
         alpha=class_weights,
-        gamma=2.0,
+        gamma=mc.focal_gamma,
         label_smoothing=0.05,  # 0.1→0.05
         reduction='none',
     ).to(device)
 
     # 加载检查点
     focal_loss_fn.label_smoothing = mc.label_smoothing
+    focal_loss_fn.cls_time_weight_power = max(float(mc.cls_time_weight_power), 0.0)
+    focal_loss_fn.ret_time_weight_power = max(float(mc.ret_time_weight_power), 0.0)
+    logger.warning(
+        "Loss config: focal_gamma=%.2f cls_w(ini->final)=%.2f->%.2f ret_w(ini->final)=%.2f->%.2f "
+        "time_weight_power(cls/ret)=%.2f/%.2f",
+        mc.focal_gamma,
+        mc.cls_loss_weight_initial,
+        mc.cls_loss_weight_final,
+        mc.ret_loss_weight_initial,
+        mc.ret_loss_weight_final,
+        focal_loss_fn.cls_time_weight_power,
+        focal_loss_fn.ret_time_weight_power,
+    )
 
     start_epoch = 0
     best_val_loss = float('inf')
@@ -825,14 +1034,29 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     # ========== 7. 训练循环 ==========
     # 回归损失自适应权重：初始 0.1，随训练进展逐渐增加到 0.3
-    ret_loss_weight_initial = 0.1
-    ret_loss_weight_final = 0.3
+    cls_loss_weight_initial = float(mc.cls_loss_weight_initial)
+    cls_loss_weight_final = float(mc.cls_loss_weight_final)
+    ret_loss_weight_initial = float(mc.ret_loss_weight_initial)
+    ret_loss_weight_final = float(mc.ret_loss_weight_final)
+    prev_epoch_val_loss = None
+    converge_stall_count = 0
 
     for epoch in range(start_epoch, mc.epochs):
         model.train()
         total_loss = 0
         total_cls_loss = 0
         total_ret_loss = 0
+        cls_loss_weight = cls_loss_weight_initial
+        ret_loss_weight = ret_loss_weight_initial
+        should_collect_head_diag = bool(
+            mc.head_diag_enabled and ((epoch + 1) % max(1, mc.head_diag_interval) == 0)
+        )
+        train_diag_labels: List[int] = []
+        train_diag_probs: List[np.ndarray] = []
+        train_diag_logits: List[np.ndarray] = []
+        train_diag_ret_pred: List[np.ndarray] = []
+        train_diag_ret_true: List[np.ndarray] = []
+        train_diag_batches = 0
         optimizer.zero_grad()
 
         progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{mc.epochs}", leave=False)
@@ -860,28 +1084,42 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
                     continue
 
                 # Focal Loss 替代 CrossEntropy
-                loss_cls = focal_loss_fn(logits, labels, sample_weights=weights)
+                cls_w = torch.pow(weights, focal_loss_fn.cls_time_weight_power)
+                ret_w = torch.pow(weights, focal_loss_fn.ret_time_weight_power)
+                loss_cls = focal_loss_fn(logits, labels, sample_weights=cls_w)
                 loss_cls = loss_cls.mean()
 
                 # ★ 修复5: rets 标准化到 O(1) 量级，让回归头有真实梯度
                 rets_norm = rets / mc.ret_target_scale
                 loss_ret = nn.SmoothL1Loss(reduction='none')(ret_pred.squeeze(), rets_norm.squeeze())
-                loss_ret = (loss_ret * weights).mean()
+                loss_ret = (loss_ret * ret_w).mean()
 
                 # 回归损失权重自适应增加
                 progress = min(1.0, epoch / max(mc.epochs - 1, 1))
+                cls_loss_weight = cls_loss_weight_initial + (cls_loss_weight_final - cls_loss_weight_initial) * progress
                 ret_loss_weight = ret_loss_weight_initial + (ret_loss_weight_final - ret_loss_weight_initial) * progress
 
-                loss = loss_cls + ret_loss_weight * loss_ret
+                loss = cls_loss_weight * loss_cls + ret_loss_weight * loss_ret
+                probs = torch.softmax(logits, dim=-1)
 
             if torch.isnan(loss) or torch.isinf(loss):
                 optimizer.zero_grad()
                 continue
 
+            if should_collect_head_diag and train_diag_batches < mc.head_diag_max_batches:
+                train_diag_labels.extend(labels.detach().cpu().numpy().astype(np.int64).tolist())
+                train_diag_probs.append(probs.detach().cpu().numpy())
+                train_diag_logits.append(logits.detach().cpu().numpy())
+                train_diag_ret_pred.append((ret_pred.squeeze() * mc.ret_target_scale).detach().cpu().reshape(-1).numpy())
+                train_diag_ret_true.append(rets.squeeze().detach().cpu().reshape(-1).numpy())
+                train_diag_batches += 1
+
             loss = loss / mc.accumulation_steps
             grad_scaler.scale(loss).backward()
 
-            should_step = (i + 1) % mc.accumulation_steps == 0 or (i + 1) == len(train_loader)
+            # Only step on full accumulation windows.
+            # This avoids unstable tail updates from incomplete windows at epoch end.
+            should_step = (i + 1) % mc.accumulation_steps == 0
             if should_step:
                 grad_scaler.unscale_(optimizer)
                 has_nan = any(
@@ -924,14 +1162,16 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         # Online model val metrics
         online_metrics = _compute_epoch_metrics(
-            model, val_loader, device, focal_loss_fn, ret_loss_weight,
+            model, val_loader, device, focal_loss_fn, cls_loss_weight, ret_loss_weight,
             amp_dtype, ret_scale=mc.ret_target_scale, prefix="val_online",
+            diag_max_batches=mc.head_diag_max_batches if should_collect_head_diag else 0,
         )
 
         # EMA model val metrics
         ema_metrics = _compute_epoch_metrics(
-            ema.get_model(), val_loader, device, focal_loss_fn, ret_loss_weight,
+            ema.get_model(), val_loader, device, focal_loss_fn, cls_loss_weight, ret_loss_weight,
             amp_dtype, ret_scale=mc.ret_target_scale, prefix="val_ema",
+            diag_max_batches=mc.head_diag_max_batches if should_collect_head_diag else 0,
         )
 
         current_lr = optimizer.param_groups[0]["lr"]
@@ -954,11 +1194,31 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             f"dn_prec={ema_metrics['val_ema_down_precision']:.3f} "
             f"ret_mae={ema_metrics['val_ema_ret_mae']:.5f} "
             f"ret_ic={ema_metrics['val_ema_ret_ic']:.4f}, "
-            f"LR: {current_lr:.2e}, ret_w: {ret_loss_weight:.2f}"
+            f"LR: {current_lr:.2e}, cls_w: {cls_loss_weight:.2f}, ret_w: {ret_loss_weight:.2f}"
         )
+
+        if should_collect_head_diag:
+            train_diag = _build_head_diag(
+                labels=train_diag_labels,
+                probs=train_diag_probs,
+                logits=train_diag_logits,
+                ret_pred=train_diag_ret_pred,
+                ret_true=train_diag_ret_true,
+            )
+            _log_head_diag(epoch + 1, "train", train_diag, mc)
+            _log_head_diag(epoch + 1, "val_online", online_metrics.get("val_online_head_diag"), mc)
+            _log_head_diag(epoch + 1, "val_ema", ema_metrics.get("val_ema_head_diag"), mc)
 
         # Use EMA val_loss for model selection
         avg_val_loss = ema_metrics['val_ema_loss']
+
+        if prev_epoch_val_loss is not None:
+            epoch_improvement = prev_epoch_val_loss - avg_val_loss
+            if epoch_improvement < mc.convergence_min_delta:
+                converge_stall_count += 1
+            else:
+                converge_stall_count = 0
+        prev_epoch_val_loss = avg_val_loss
 
         checkpoint_path = f"model_epoch_{epoch + 1}.pth"
         torch.save({
@@ -985,6 +1245,14 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         if early_stopping(avg_val_loss):
             logger.warning("Early stopping triggered")
+            break
+
+        if converge_stall_count >= mc.convergence_patience:
+            logger.warning(
+                "Convergence early stopping triggered: "
+                f"EMA val_loss improvement < {mc.convergence_min_delta:.4f} "
+                f"for {mc.convergence_patience} consecutive epochs"
+            )
             break
 
         if np.isnan(avg_val_loss) or np.isinf(avg_val_loss):

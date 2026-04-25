@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 from config import get_settings
 from data.fundamentals import load_fundamental_snapshot
-from llm import LLMUnavailableError, OpenAICompatibleClient
+from llm import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
 
@@ -152,14 +152,27 @@ def analyze_fundamentals(code: str, name: str = "", refresh: bool = False) -> Di
     if os.path.exists(cache_path) and not refresh:
         try:
             with open(cache_path, "r", encoding="utf-8") as file:
-                return json.load(file)
+                cached = json.load(file)
+            # Do not reuse stale/empty fundamentals cache forever.
+            if cached.get("snapshot_available") and float(cached.get("coverage_ratio", 0.0)) > 0:
+                return cached
+            logger.info("Ignore stale fundamental cache for %s due to empty snapshot", code)
         except Exception:
             logger.warning("Failed to load cached fundamental analysis for %s", code)
 
     snapshot = load_fundamental_snapshot(code=code, name=name, refresh=refresh)
+    if not refresh and (not snapshot.get("raw_available") or float(snapshot.get("coverage_ratio", 0.0)) <= 0.0):
+        # Force one refetch to avoid being stuck with old empty snapshot cache.
+        snapshot = load_fundamental_snapshot(code=code, name=name, refresh=True)
+
+    use_llm = (
+        settings.llm.enabled
+        and bool(snapshot.get("raw_available"))
+        and float(snapshot.get("coverage_ratio", 0.0)) >= 0.15
+    )
     try:
-        result = _llm_score(snapshot) if settings.llm.enabled else _rule_based_score(snapshot)
-    except (LLMUnavailableError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        result = _llm_score(snapshot) if use_llm else _rule_based_score(snapshot)
+    except Exception as exc:
         logger.warning("Fundamental LLM analysis failed for %s: %s", code, exc)
         result = _rule_based_score(snapshot)
 
