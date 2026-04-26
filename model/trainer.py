@@ -975,7 +975,10 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     # ========== 6. 模型与优化器 ==========
     actual_lr = mc.learning_rate
-    amp_dtype = torch.float16 if device.type == 'cuda' else None
+    if device.type == 'cuda':
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    else:
+        amp_dtype = None
 
     model = StockTransformer(
         input_dim=len(FEATURES),  # 包含新增的收益率特征
@@ -990,7 +993,9 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         model.parameters(), lr=actual_lr,
         weight_decay=mc.weight_decay, fused=True,
     )
-    grad_scaler = GradScaler('cuda', enabled=(device.type == 'cuda'))
+    # bf16 training does not require GradScaler; keep scaler for fp16 only.
+    grad_scaler = GradScaler('cuda', enabled=(device.type == 'cuda' and amp_dtype == torch.float16))
+    logger.warning("AMP dtype: %s, grad_scaler_enabled=%s", amp_dtype, grad_scaler.is_enabled())
 
     # ★ 修复3: 用 PyTorch 自带的 SequentialLR 替代 FinanceScheduler+CosineAnnealingWarmRestarts
     # 避免 base_lr 在 warmup 阶段被污染导致 cosine 从错误起点开始
@@ -1086,6 +1091,8 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         total_loss = 0
         total_cls_loss = 0
         total_ret_loss = 0
+        valid_batch_count = 0
+        accumulated_valid_batches = 0
         cls_loss_weight = cls_loss_weight_initial
         ret_loss_weight = ret_loss_weight_initial
         should_collect_head_diag = bool(
@@ -1156,10 +1163,12 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
             loss = loss / mc.accumulation_steps
             grad_scaler.scale(loss).backward()
+            accumulated_valid_batches += 1
+            valid_batch_count += 1
 
             # Only step on full accumulation windows.
             # This avoids unstable tail updates from incomplete windows at epoch end.
-            should_step = (i + 1) % mc.accumulation_steps == 0
+            should_step = accumulated_valid_batches % mc.accumulation_steps == 0
             if should_step:
                 grad_scaler.unscale_(optimizer)
                 has_nan = any(
@@ -1195,7 +1204,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         # ★ 新修复A: online/EMA 双验证 val_loss
         # Use _compute_epoch_metrics for full metrics
-        avg_train_loss = total_loss / len(train_loader)
+        avg_train_loss = total_loss / max(valid_batch_count, 1)
 
         if epoch >= swa_start:
             swa_model.update_parameters(model)

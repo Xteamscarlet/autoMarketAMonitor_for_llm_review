@@ -74,7 +74,11 @@ def analyze_stock(code: str, name: str, df: Optional[pd.DataFrame] = None) -> Di
 
     blended = 0.0
     total_weight = 0.0
-    if result["fundamentals"] and settings.analysis.blend_fundamental_score:
+    if (
+        result["fundamentals"]
+        and settings.analysis.blend_fundamental_score
+        and float(result["fundamentals"].get("coverage_ratio", 0.0)) > 0.0
+    ):
         blended += result["fundamentals"]["score"] * settings.analysis.fundamental_weight
         total_weight += settings.analysis.fundamental_weight
     if result["technicals"] and settings.analysis.blend_technical_score:

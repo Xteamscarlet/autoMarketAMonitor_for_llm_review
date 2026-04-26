@@ -24,6 +24,21 @@ def _rule_based_score(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     risks: List[str] = []
     score = 0.5
 
+    if not snapshot.get("raw_available") and coverage_ratio <= 0.0:
+        return {
+            "score": 0.5,
+            "confidence": 0.0,
+            "summary": "基本面数据不可用，按中性处理",
+            "positives": [],
+            "risks": ["基本面数据源不可用"],
+            "tags": ["基本面数据源不可用"],
+            "source": "rule_based",
+            "latest_period": snapshot.get("latest_period"),
+            "coverage_ratio": 0.0,
+            "filled_metrics": snapshot.get("filled_metrics", []),
+            "missing_metrics": snapshot.get("missing_metrics", []),
+        }
+
     roe = _metric_value(metrics, "roe")
     if roe is not None:
         if roe >= 15:

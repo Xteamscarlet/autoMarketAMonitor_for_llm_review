@@ -12,6 +12,7 @@ import pandas as pd
 from config import get_settings
 
 logger = logging.getLogger(__name__)
+_LAST_FETCH_DETAILS: Dict[str, Any] = {}
 
 try:
     import akshare as ak
@@ -149,27 +150,71 @@ def _find_matching_column(df: pd.DataFrame, aliases: Iterable[str]) -> Optional[
     return None
 
 
+def _stock_code_variants(code: str) -> List[str]:
+    plain = str(code).strip()
+    if not plain:
+        return []
+    market = "sh" if plain.startswith("6") else "sz"
+    variants = [
+        plain,
+        f"{market}{plain}",
+        f"{market.upper()}{plain}",
+        f"{plain}.{market.upper()}",
+    ]
+    seen = set()
+    return [item for item in variants if item and not (item in seen or seen.add(item))]
+
+
+def _ak_argument_sets(code: str) -> List[Dict[str, Any]]:
+    variants = _stock_code_variants(code)
+    argument_sets: List[Dict[str, Any]] = []
+    for symbol in variants:
+        argument_sets.extend(
+            [
+                {"symbol": symbol},
+                {"stock": symbol},
+                {"code": symbol},
+                {"symbol": symbol, "indicator": "按报告期"},
+                {"symbol": symbol, "indicator": "按年度"},
+                {"symbol": symbol, "indicator": "按单季度"},
+            ]
+        )
+    return argument_sets
+
+
 def _call_ak(function_names: Iterable[str], code: str) -> Optional[pd.DataFrame]:
+    global _LAST_FETCH_DETAILS
+    details = {
+        "akshare_available": _AK_AVAILABLE,
+        "attempted_functions": [],
+        "errors": [],
+    }
+    _LAST_FETCH_DETAILS = details
+
     if not _AK_AVAILABLE:
+        details["errors"].append("akshare_not_installed")
         return None
 
-    argument_sets = [
-        {"symbol": code},
-        {"stock": code},
-        {"code": code},
-    ]
+    argument_sets = _ak_argument_sets(code)
     for func_name in function_names:
         func = getattr(ak, func_name, None)
+        details["attempted_functions"].append(func_name)
         if func is None:
+            details["errors"].append(f"{func_name}: missing")
             continue
         for kwargs in argument_sets:
             try:
                 result = func(**kwargs)
             except TypeError:
                 continue
-            except Exception:
+            except Exception as exc:
+                if len(details["errors"]) < 12:
+                    details["errors"].append(f"{func_name}{kwargs}: {type(exc).__name__}: {exc}")
                 result = None
             if isinstance(result, pd.DataFrame) and not result.empty:
+                details["selected_function"] = func_name
+                details["selected_kwargs"] = kwargs
+                details["rows"] = int(len(result))
                 return result
     return None
 
@@ -400,19 +445,23 @@ def _fill_derived_metrics(
 
 
 def fetch_financial_abstract(code: str) -> pd.DataFrame:
-    return _call_ak(ABSTRACT_FUNCTIONS, code=code) or pd.DataFrame()
+    result = _call_ak(ABSTRACT_FUNCTIONS, code=code)
+    return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
 
 
 def fetch_income_statement(code: str) -> pd.DataFrame:
-    return _call_ak(INCOME_FUNCTIONS, code=code) or pd.DataFrame()
+    result = _call_ak(INCOME_FUNCTIONS, code=code)
+    return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
 
 
 def fetch_balance_sheet(code: str) -> pd.DataFrame:
-    return _call_ak(BALANCE_FUNCTIONS, code=code) or pd.DataFrame()
+    result = _call_ak(BALANCE_FUNCTIONS, code=code)
+    return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
 
 
 def fetch_cashflow_statement(code: str) -> pd.DataFrame:
-    return _call_ak(CASHFLOW_FUNCTIONS, code=code) or pd.DataFrame()
+    result = _call_ak(CASHFLOW_FUNCTIONS, code=code)
+    return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
 
 
 def load_fundamental_snapshot(code: str, name: str = "", refresh: bool = False) -> Dict[str, Any]:
@@ -421,17 +470,32 @@ def load_fundamental_snapshot(code: str, name: str = "", refresh: bool = False) 
     if os.path.exists(cache_path) and not refresh:
         try:
             with open(cache_path, "r", encoding="utf-8") as file:
-                return json.load(file)
+                cached = json.load(file)
+            if cached.get("raw_available") and float(cached.get("coverage_ratio", 0.0)) > 0:
+                return cached
+            logger.info("Ignore stale empty fundamentals snapshot for %s", code)
         except Exception:
             logger.warning("Failed to load cached fundamentals for %s", code)
 
     metrics = {metric_name: {"value": None, "period": None, "source": None} for metric_name in METRIC_ALIASES}
     sources_used: Dict[str, str] = {}
 
+    fetch_details: Dict[str, Dict[str, Any]] = {}
+
     abstract_df = fetch_financial_abstract(code)
-    income_df = _normalize_statement_df(fetch_income_statement(code))
-    balance_df = _normalize_statement_df(fetch_balance_sheet(code))
-    cashflow_df = _normalize_statement_df(fetch_cashflow_statement(code))
+    fetch_details["abstract"] = dict(_LAST_FETCH_DETAILS)
+
+    income_raw_df = fetch_income_statement(code)
+    fetch_details["income"] = dict(_LAST_FETCH_DETAILS)
+    income_df = _normalize_statement_df(income_raw_df)
+
+    balance_raw_df = fetch_balance_sheet(code)
+    fetch_details["balance"] = dict(_LAST_FETCH_DETAILS)
+    balance_df = _normalize_statement_df(balance_raw_df)
+
+    cashflow_raw_df = fetch_cashflow_statement(code)
+    fetch_details["cashflow"] = dict(_LAST_FETCH_DETAILS)
+    cashflow_df = _normalize_statement_df(cashflow_raw_df)
 
     _fill_direct_metrics(metrics, sources_used, abstract_df)
     _fill_derived_metrics(metrics, sources_used, balance_df, income_df, cashflow_df)
@@ -449,11 +513,13 @@ def load_fundamental_snapshot(code: str, name: str = "", refresh: bool = False) 
 
     raw_available = bool(not abstract_df.empty or not income_df.empty or not balance_df.empty or not cashflow_df.empty)
     source_details = {
+        "akshare_available": _AK_AVAILABLE,
         "abstract_rows": int(len(abstract_df)) if not abstract_df.empty else 0,
         "income_rows": int(len(income_df)) if not income_df.empty else 0,
         "balance_rows": int(len(balance_df)) if not balance_df.empty else 0,
         "cashflow_rows": int(len(cashflow_df)) if not cashflow_df.empty else 0,
         "metric_sources": sources_used,
+        "fetch_details": fetch_details,
     }
 
     snapshot = {
