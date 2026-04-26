@@ -1,0 +1,21 @@
+{
+  "score": 0.5399,
+  "confidence": 0.4299,
+  "stance": "neutral",
+  "summary": "RSI 处于健康区间；成交量放大；MACD 动能偏弱",
+  "positives": [
+    "RSI 处于健康区间",
+    "成交量放大"
+  ],
+  "risks": [
+    "MACD 动能偏弱"
+  ],
+  "key_levels": {
+    "support": 187.9,
+    "resistance": 187.9
+  },
+  "source": "rule_based",
+  "code": "002384",
+  "name": "东山精密",
+  "trade_date": "2026-04-24"
+}

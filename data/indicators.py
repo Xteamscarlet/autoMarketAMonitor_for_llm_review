@@ -91,6 +91,7 @@ def calculate_orthogonal_factors(
     stock_code: str = "",
     device=None,
     allow_save_cache: bool = False,
+    enable_transformer: bool = True,
 ) -> pd.DataFrame:
     """计算正交化因子（传统因子 + Transformer因子）
 
@@ -136,7 +137,7 @@ def calculate_orthogonal_factors(
     df['bb_width'] = (upper - lower) / middle
 
     # ========== Transformer 因子计算 ==========
-    if _check_transformer_available():
+    if enable_transformer and _check_transformer_available():
         from data.cache import load_transformer_cache, save_transformer_cache
         from model.predictor import calculate_transformer_factor_series
 

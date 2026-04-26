@@ -26,7 +26,7 @@ ALL_FACTOR_COLS = TRADITIONAL_FACTOR_COLS + AI_FACTOR_COLS
 
 NON_FACTOR_COLS = [
     'Close', 'Open', 'High', 'Low', 'Volume', 'MA20', 'Combined_Score',
-    'Close_raw', 'transformer_pred_ret_raw',
+    'Close_raw', 'transformer_pred_ret_raw', 'transformer_available',
 ]
 
 # ★ 扩展市场状态（5种）

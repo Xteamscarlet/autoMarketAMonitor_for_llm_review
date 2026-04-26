@@ -199,12 +199,19 @@ def walk_forward_split(
 
     train_len = int(total_len * train_ratio)
     val_len = int(total_len * val_ratio)
-    test_len = int(total_len * test_ratio)
+    # The remaining out-of-sample budget is split into smaller rolling test
+    # windows. Using the whole remaining ratio as every test window only allows
+    # one split for the default 70/15/15 configuration.
+    test_budget = total_len - train_len - val_len - (2 * gap_days)
+    if test_budget < min_test_size:
+        print(f"\nwalk-forward: not enough data for a test window ({test_budget} < {min_test_size})")
+        return []
+    test_len = max(min_test_size, test_budget // max(n_splits, 1))
 
     print(f"\n数据总长度: {total_len}")
     print(f"初始训练集长度: {train_len} ({train_ratio * 100:.1f}%)")
     print(f"验证集长度: {val_len} ({val_ratio * 100:.1f}%)")
-    print(f"测试集长度: {test_len} ({test_ratio * 100:.1f}%)")
+    print(f"测试集长度: {test_len} ({test_len / total_len * 100:.1f}% per split)")
     print(f"间隔天数: {gap_days}")
     print(f"扩展窗口: {expanding_window}")
 
@@ -229,7 +236,7 @@ def walk_forward_split(
             test_start = val_end + gap_days
             test_end = min(test_start + test_len, total_len)
 
-            if test_start >= total_len:
+            if val_end > total_len or test_start >= total_len:
                 print(f"\n第 {i + 1} 次划分：测试集超出数据范围，停止划分")
                 break
 
@@ -264,7 +271,7 @@ def walk_forward_split(
             test_start = val_end + gap_days
             test_end = min(test_start + test_len, total_len)
 
-            if test_start >= total_len:
+            if val_end > total_len or test_start >= total_len:
                 break
 
             actual_train_len = train_end - train_start

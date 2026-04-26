@@ -1,0 +1,116 @@
+{
+  "code": "002384",
+  "name": "东山精密",
+  "data_source": "unavailable",
+  "latest_period": null,
+  "metrics": {
+    "roe": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "net_margin": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "gross_margin": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "asset_liability_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "current_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "cash_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "net_profit_yoy": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "eps": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "operating_cashflow": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "free_cashflow": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "profit_cash_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "goodwill_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "inventory_turnover": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "receivables_turnover": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "interest_bearing_debt_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    },
+    "rd_ratio": {
+      "value": null,
+      "period": null,
+      "source": null
+    }
+  },
+  "raw_available": false,
+  "filled_metrics": [],
+  "missing_metrics": [
+    "roe",
+    "net_margin",
+    "gross_margin",
+    "asset_liability_ratio",
+    "current_ratio",
+    "cash_ratio",
+    "net_profit_yoy",
+    "eps",
+    "operating_cashflow",
+    "free_cashflow",
+    "profit_cash_ratio",
+    "goodwill_ratio",
+    "inventory_turnover",
+    "receivables_turnover",
+    "interest_bearing_debt_ratio",
+    "rd_ratio"
+  ],
+  "coverage_ratio": 0.0,
+  "source_details": {
+    "abstract_rows": 0,
+    "income_rows": 0,
+    "balance_rows": 0,
+    "cashflow_rows": 0,
+    "metric_sources": {}
+  }
+}

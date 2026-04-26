@@ -302,6 +302,7 @@ class PathConfig:
     swa_model_path: str = "swa_model_weights.pth"
     scaler_path: str = "per_stock_scalers.pkl"
     global_scaler_path: str = "global_scaler.pkl"
+    model_metadata_path: str = "model_training_metadata.json"
     label_thresholds_path: str = "label_thresholds.pkl"  # ★ 修复6: 保存训练集分位数阈值
     strategy_file: str = "optimized_strategies.json"
     portfolio_file: str = "my_portfolio.json"
@@ -325,6 +326,7 @@ class PathConfig:
             swa_model_path=_env("SWA_MODEL_PATH", "swa_model_weights.pth"),
             scaler_path=_env("SCALER_PATH", "per_stock_scalers.pkl"),
             global_scaler_path=_env("GLOBAL_SCALER_PATH", "global_scaler.pkl"),
+            model_metadata_path=_env("MODEL_METADATA_PATH", "model_training_metadata.json"),
             label_thresholds_path=_env("LABEL_THRESHOLDS_PATH", "label_thresholds.pkl"),
             strategy_file=_env("STRATEGY_FILE", "optimized_strategies.json"),
             portfolio_file=_env("PORTFOLIO_FILE", "my_portfolio.json"),

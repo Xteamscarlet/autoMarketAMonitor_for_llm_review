@@ -17,6 +17,7 @@ import math
 import heapq
 import logging
 import time
+import json
 from typing import Optional, Dict, Tuple, List
 
 import numpy as np
@@ -744,6 +745,22 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         combined_df = combined_df[combined_df['Volume'] > 0]
 
     combined_df = combined_df.sort_values(['Code', 'Date'])
+    transformer_train_end_date = os.getenv("TRANSFORMER_TRAIN_END_DATE", "").strip()
+    if transformer_train_end_date:
+        cutoff = pd.to_datetime(transformer_train_end_date, errors="coerce")
+        if pd.isna(cutoff):
+            raise ValueError(f"TRANSFORMER_TRAIN_END_DATE 无效: {transformer_train_end_date}")
+        combined_df["Date"] = pd.to_datetime(combined_df["Date"], errors="coerce")
+        before_count = len(combined_df)
+        combined_df = combined_df[combined_df["Date"] <= cutoff].copy()
+        logger.info(
+            "Transformer 训练硬截止日期: %s | 样本数 %d -> %d",
+            cutoff.strftime("%Y-%m-%d"),
+            before_count,
+            len(combined_df),
+        )
+        if combined_df.empty:
+            raise ValueError(f"TRANSFORMER_TRAIN_END_DATE={transformer_train_end_date} 后无可训练样本")
     combined_df['Close_raw'] = combined_df['Close']
     combined_df['daily_ret'] = combined_df.groupby('Code')['Close'].pct_change()
     combined_df = combined_df[
@@ -776,6 +793,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     train_dfs = []
     val_dfs = []
     invalid_stocks = []
+    model_train_end_by_code = {}
 
     for code, group in combined_df.groupby('Code'):
         group = group.sort_values('Date').reset_index(drop=True)
@@ -838,6 +856,10 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             val_part[FEATURES] = val_part[FEATURES].clip(-5, 5)
 
             scalers[code] = scaler
+            if 'Date' in train_part.columns:
+                train_end_date = pd.to_datetime(train_part['Date'], errors='coerce').max()
+                if pd.notna(train_end_date):
+                    model_train_end_by_code[str(code)] = train_end_date.strftime('%Y-%m-%d')
             train_dfs.append(train_part)
             val_dfs.append(val_part)
         except Exception as e:
@@ -849,6 +871,24 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     train_df = pd.concat(train_dfs, ignore_index=True)
     val_df = pd.concat(val_dfs, ignore_index=True)
+
+    training_metadata = None
+    if model_train_end_by_code:
+        train_end_values = pd.to_datetime(list(model_train_end_by_code.values()), errors='coerce')
+        max_train_end = train_end_values.max()
+        min_train_end = train_end_values.min()
+        training_metadata = {
+            "version": 1,
+            "boundary_type": "per_stock_train_end",
+            "requested_train_end_date": transformer_train_end_date or None,
+            "model_train_end_date": max_train_end.strftime('%Y-%m-%d') if pd.notna(max_train_end) else None,
+            "model_train_start_date": min_train_end.strftime('%Y-%m-%d') if pd.notna(min_train_end) else None,
+            "train_end_by_code": model_train_end_by_code,
+            "feature_names": list(FEATURES),
+            "model_path": pc.model_path,
+            "swa_model_path": pc.swa_model_path,
+            "topk_checkpoint_dir": pc.topk_checkpoint_dir,
+        }
 
     joblib.dump(scalers, pc.scaler_path)
     logger.info(f"已保存 {len(scalers)} 个股票的独立 scaler")
@@ -1269,6 +1309,14 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
         logger.warning(f"SWA model saved: {pc.swa_model_path}")
     else:
         logger.warning(f"SWA 累积仅 {swa_n} 个 epoch，跳过保存（避免与 EMA 重复）")
+
+    if training_metadata is not None:
+        training_metadata["created_at"] = pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+        training_metadata["best_val_loss"] = float(best_val_loss) if np.isfinite(best_val_loss) else None
+        training_metadata["last_val_loss"] = float(avg_val_loss) if np.isfinite(avg_val_loss) else None
+        with open(pc.model_metadata_path, "w", encoding="utf-8") as f:
+            json.dump(training_metadata, f, ensure_ascii=False, indent=2)
+        logger.warning(f"Transformer training metadata saved: {pc.model_metadata_path}")
 
     logger.warning(f"EMA best model saved: {pc.model_path}")
     logger.warning(f"Top-K ensemble checkpoints: {pc.topk_checkpoint_dir}/")

@@ -275,6 +275,7 @@ def main():
         settings.paths.swa_model_path,
         settings.paths.scaler_path,
         settings.paths.global_scaler_path,
+        settings.paths.model_metadata_path,
     ]:
         if os.path.exists(p):
             size_mb = os.path.getsize(p) / 1024 / 1024

@@ -1,0 +1,20 @@
+{
+  "score": 0.4999,
+  "confidence": 0.3501,
+  "stance": "neutral",
+  "summary": "RSI 处于健康区间；MACD 动能偏弱",
+  "positives": [
+    "RSI 处于健康区间"
+  ],
+  "risks": [
+    "MACD 动能偏弱"
+  ],
+  "key_levels": {
+    "support": 33.6,
+    "resistance": 33.6
+  },
+  "source": "rule_based",
+  "code": "002415",
+  "name": "海康威视",
+  "trade_date": "2026-04-24"
+}

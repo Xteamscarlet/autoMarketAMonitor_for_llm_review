@@ -38,6 +38,7 @@ from utils.stock_filter import filter_codes_by_name, should_intercept_stock
 
 _worker_market_data = None
 _worker_stocks_data = None
+_transformer_metadata_cache = None
 
 
 def init_worker(m_data, s_data, preload_models: bool = False):
@@ -53,9 +54,77 @@ def init_worker(m_data, s_data, preload_models: bool = False):
             pass
 
 
+def _load_transformer_training_metadata(settings):
+    global _transformer_metadata_cache
+    if _transformer_metadata_cache is not None:
+        return _transformer_metadata_cache
+
+    path = getattr(settings.paths, "model_metadata_path", "model_training_metadata.json")
+    if not os.path.exists(path):
+        _transformer_metadata_cache = {}
+        return _transformer_metadata_cache
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _transformer_metadata_cache = json.load(f)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("无法读取 Transformer 训练边界元数据 %s: %s", path, exc)
+        _transformer_metadata_cache = {}
+    return _transformer_metadata_cache
+
+
+def _get_transformer_train_end(metadata: dict, stock_code: str):
+    if not metadata:
+        return None
+    by_code = metadata.get("train_end_by_code") or {}
+    raw = by_code.get(str(stock_code)) or metadata.get("model_train_end_date")
+    if not raw:
+        return None
+    parsed = pd.to_datetime(raw, errors="coerce")
+    return parsed if pd.notna(parsed) else None
+
+
+def _is_transformer_valid_for_split(metadata: dict, stock_code: str, train_df: pd.DataFrame) -> tuple[bool, str]:
+    train_end = _get_transformer_train_end(metadata, stock_code)
+    if train_end is None:
+        return False, "missing_model_training_metadata"
+    if train_df is None or train_df.empty:
+        return False, "empty_train_split"
+
+    split_train_end = pd.to_datetime(train_df.index[-1], errors="coerce")
+    if pd.isna(split_train_end):
+        return False, "invalid_split_train_end"
+
+    if train_end > split_train_end:
+        return False, f"model_train_end={train_end.date()} > split_train_end={split_train_end.date()}"
+    return True, f"model_train_end={train_end.date()} <= split_train_end={split_train_end.date()}"
+
+
+def _set_transformer_availability(df: pd.DataFrame, available: bool) -> pd.DataFrame:
+    df = df.copy()
+    df["transformer_available"] = bool(available)
+    if not available:
+        if "transformer_prob" in df.columns:
+            df["transformer_prob"] = 0.5
+        if "transformer_pred_ret" in df.columns:
+            df["transformer_pred_ret"] = 0.5
+        if "transformer_pred_ret_raw" in df.columns:
+            df["transformer_pred_ret_raw"] = 0.0
+        if "transformer_conf" in df.columns:
+            df["transformer_conf"] = 0.0
+        if "transformer_uncertainty" in df.columns:
+            df["transformer_uncertainty"] = 1.0
+    return df
+
+
 def precompute_transformer_caches(stocks_data, settings) -> None:
     if not settings.backtest.precompute_transformer_cache:
         print("[Transformer预计算] 已关闭，直接进入回测。")
+        return
+
+    metadata = _load_transformer_training_metadata(settings)
+    if not metadata:
+        print("[Transformer预计算] 未找到训练边界元数据，跳过预计算；回测中将禁用 Transformer 因子。")
         return
 
     try:
@@ -227,6 +296,72 @@ def _build_benchmark_returns(market_data, df: pd.DataFrame) -> pd.Series:
     return None
 
 
+def _build_test_dataframe_from_splits(df: pd.DataFrame, splits) -> pd.DataFrame:
+    """Return the concatenated walk-forward test ranges for one stock."""
+    if df is None or not splits:
+        return pd.DataFrame()
+
+    test_segments = []
+    for split in splits:
+        if len(split) < 6:
+            continue
+        seg_start, seg_end = split[4], split[5]
+        seg_df = df.iloc[seg_start:seg_end]
+        if len(seg_df) > 0:
+            test_segments.append(seg_df)
+
+    if not test_segments:
+        return pd.DataFrame()
+
+    test_df = pd.concat(test_segments).sort_index()
+    return test_df[~test_df.index.duplicated(keep="first")]
+
+
+def _calculate_daily_portfolio_stats(port_daily: pd.Series) -> dict:
+    """Calculate portfolio metrics from a daily return curve, not fake trades."""
+    returns = pd.Series(port_daily).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    if returns.empty:
+        return {}
+
+    equity = (1.0 + returns).cumprod()
+    total_return = (equity.iloc[-1] - 1.0) * 100
+    years = max(len(returns) / 252.0, 1 / 252.0)
+    ann_return = ((1.0 + total_return / 100.0) ** (1.0 / years) - 1.0) * 100 if total_return > -100 else -100.0
+
+    drawdown = equity / equity.cummax() - 1.0
+    max_drawdown = drawdown.min() * 100
+
+    std = returns.std()
+    sharpe = (returns.mean() / std) * np.sqrt(252) if std > 1e-12 else 0.0
+
+    downside = returns[returns < 0]
+    downside_std = downside.std()
+    sortino = (returns.mean() / downside_std) * np.sqrt(252) if len(downside) > 1 and downside_std > 1e-12 else 0.0
+
+    gross_profit = returns[returns > 0].sum()
+    gross_loss = abs(returns[returns < 0].sum())
+    profit_factor = gross_profit / (gross_loss + 1e-12)
+    calmar = ann_return / (abs(max_drawdown) + 1e-12)
+
+    active_returns = returns[returns != 0]
+    active_std = active_returns.std()
+    sqn = (
+        (active_returns.mean() / active_std) * np.sqrt(len(active_returns))
+        if len(active_returns) > 1 and active_std > 1e-12 else 0.0
+    )
+
+    return {
+        "total_return": float(total_return),
+        "ann_return": float(ann_return),
+        "sharpe_ratio": float(sharpe),
+        "max_drawdown": float(max_drawdown),
+        "profit_factor": float(profit_factor),
+        "sortino_ratio": float(sortino),
+        "calmar_ratio": float(calmar),
+        "sqn": float(sqn),
+    }
+
+
 def process_single_stock(args):
     """
     处理单只股票的完整回测流程
@@ -243,13 +378,19 @@ def process_single_stock(args):
 
         settings = get_settings()
         risk_mgr = RiskManager(settings.risk)
+        transformer_metadata = _load_transformer_training_metadata(settings)
 
         df = stock_data.copy()
         if len(df) < 150:
             return stock_code, None, None, None, None, None, None
 
         # 1. 因子计算
-        df = calculate_orthogonal_factors(df, stock_code, allow_save_cache=True)
+        df = calculate_orthogonal_factors(
+            df,
+            stock_code,
+            allow_save_cache=True,
+            enable_transformer=bool(transformer_metadata),
+        )
 
         # 2. Walk-Forward 划分
         splits = walk_forward_split(
@@ -278,6 +419,7 @@ def process_single_stock(args):
         all_trades = []
         best_params_list = []
         best_weights_list = []
+        transformer_ok_list = []
         total_commissions = 0.0
         rolling_capital = float(settings.backtest.initial_capital)
 
@@ -290,6 +432,18 @@ def process_single_stock(args):
 
             if len(train_df) < 100 or len(val_df) < 50 or len(test_df) < 20:
                 continue
+
+            transformer_ok, transformer_reason = _is_transformer_valid_for_split(
+                transformer_metadata, stock_code, train_df
+            )
+            if not transformer_ok:
+                print(
+                    f"  [Transformer-Disabled] {stock_code} split={split_idx + 1} "
+                    f"reason={transformer_reason}"
+                )
+            train_df = _set_transformer_availability(train_df, transformer_ok)
+            val_df = _set_transformer_availability(val_df, transformer_ok)
+            test_df = _set_transformer_availability(test_df, transformer_ok)
 
             try:
                 if settings.backtest.enable_val_validation:
@@ -327,6 +481,7 @@ def process_single_stock(args):
             all_trades.append(trades_df)
             best_params_list.append(best_params_map)
             best_weights_list.append(best_weights)
+            transformer_ok_list.append(transformer_ok)
             if stats is not None and stats.get("final_capital") is not None:
                 rolling_capital = float(stats["final_capital"])
 
@@ -335,20 +490,8 @@ def process_single_stock(args):
 
         combined_trades = pd.concat(all_trades, ignore_index=True)
 
-        # ★ 修复2: equity_curve 应覆盖所有 split 的 test 区间，而非只用最后一个 split
-        # 否则 trades(全 split) 和 equity(单 split) 时间不匹配，stats 全错
-        test_segments = []
-        for s in validated_splits:
-            seg_start, seg_end = s[4], s[5]
-            seg_df = df.iloc[seg_start:seg_end]
-            if len(seg_df) > 0:
-                test_segments.append(seg_df)
-
-        if test_segments:
-            combined_test_df = pd.concat(test_segments)
-            # 去重相邻 split 重叠日期（理论上 walk-forward + gap_days 不会重叠，但保险）
-            combined_test_df = combined_test_df[~combined_test_df.index.duplicated(keep='first')]
-        else:
+        combined_test_df = _build_test_dataframe_from_splits(df, validated_splits)
+        if combined_test_df.empty:
             combined_test_df = df.iloc[validated_splits[-1][4]:validated_splits[-1][5]]
 
         equity_curve = _build_account_equity_curve(
@@ -396,10 +539,16 @@ def process_single_stock(args):
 
         print(f" [KEEP] {stock_name} - 通过全部检查")
 
+        transformer_train_end = _get_transformer_train_end(transformer_metadata, stock_code)
         strategy_dict = {
             'name': stock_name,
             'params': best_params_list[0],
             'weights': best_weights_list[0],
+            'transformer_boundary_ok': bool(any(transformer_ok_list)),
+            'transformer_training_boundary': {
+                'mode': 'per_split_train_end_guard',
+                'train_end': str(transformer_train_end.date()) if transformer_train_end is not None else None,
+            },
         }
 
         final_weights = best_weights_list[-1] if best_weights_list else {}
@@ -557,22 +706,29 @@ if __name__ == "__main__":
     print("【组合回测】等权组合测试集总收益")
     print("=" * 80)
 
-    all_dates = sorted(
-        set().union(*[set(df.index) for _, _, _, df, _, _, _ in results if df is not None])
-    )
+    portfolio_test_frames = []
+    for _, _, _, df, _, splits, _ in results:
+        test_df = _build_test_dataframe_from_splits(df, splits)
+        if not test_df.empty:
+            portfolio_test_frames.append(test_df)
+
+    all_dates = sorted(set().union(*[set(df.index) for df in portfolio_test_frames])) if portfolio_test_frames else []
     portfolio = pd.DataFrame(index=all_dates)
     portfolio['return'] = 0.0
 
-    n_valid = len(results)
+    n_valid = len(portfolio_test_frames)
     if n_valid == 0:
         print("警告: 没有有效策略，无法计算组合收益")
     else:
         for code, strat, stat, df, trades, splits, metadata in results:
             if strat is None or df is None or trades is None:
                 continue
+            test_df = _build_test_dataframe_from_splits(df, splits)
+            if test_df.empty:
+                continue
 
             stock_equity = _build_account_equity_curve(
-                df=df,
+                df=test_df,
                 trades_df=trades,
                 initial_cash=settings.backtest.initial_capital,
             )
@@ -584,23 +740,8 @@ if __name__ == "__main__":
         print(f"组合总收益: {total_ret:.2f}%")
 
         port_daily = portfolio['return'].fillna(0)
-        port_trades = []
-        in_trade = False
-        buy_val = 1.0
-        for date_val, ret in port_daily.items():
-            if ret != 0 and not in_trade:
-                in_trade = True
-                buy_val = 1.0
-            if in_trade:
-                buy_val *= (1 + ret)
-            if ret == 0 and in_trade:
-                port_trades.append({'net_return': buy_val - 1})
-                in_trade = False
-        if in_trade:
-            port_trades.append({'net_return': buy_val - 1})
-
-        if port_trades:
-            port_stats = calculate_comprehensive_stats(pd.DataFrame(port_trades))
+        port_stats = _calculate_daily_portfolio_stats(port_daily)
+        if port_stats:
             print(
                 f"组合夏普: {port_stats.get('sharpe_ratio', 0):.2f} | "
                 f"最大回撤: {port_stats.get('max_drawdown', 0):.2f}% | "

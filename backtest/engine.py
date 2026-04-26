@@ -233,8 +233,10 @@ def run_backtest_loop(
         import talib as ta
         df['atr'] = ta.ATR(df['High'], df['Low'], df['Close'], timeperiod=14)
 
+    has_transformer_prob = 'transformer_prob' in df.columns
     has_transformer_conf = 'transformer_conf' in df.columns
     has_pred_ret = 'transformer_pred_ret' in df.columns
+    has_transformer_available_flag = 'transformer_available' in df.columns
 
     trades = []
     position = 0
@@ -268,16 +270,24 @@ def run_backtest_loop(
     settings = get_settings()
     regime_cfg = settings.regime
 
-    for i in range(60, len(df)):
+    for i in range(61, len(df)):
         date = df.index[i]
-        price = df['Close'].iloc[i]
+        signal_idx = i - 1
+        signal_date = df.index[signal_idx]
+        close_price = df['Close'].iloc[i]
+        open_price = df['Open'].iloc[i] if 'Open' in df.columns else close_price
+        price = open_price if pd.notna(open_price) and open_price > 0 else close_price
 
-        transformer_prob = df['transformer_prob'].iloc[i] if 'transformer_prob' in df.columns else 0.5
-        transformer_conf = df['transformer_conf'].iloc[i] if 'transformer_conf' in df.columns else 0.0
+        # Signals use the previous completed bar; execution happens on this bar.
+        transformer_available = has_transformer_prob
+        if has_transformer_available_flag:
+            transformer_available = bool(df['transformer_available'].iloc[signal_idx])
+        transformer_prob = df['transformer_prob'].iloc[signal_idx] if has_transformer_prob else 0.5
+        transformer_conf = df['transformer_conf'].iloc[signal_idx] if has_transformer_conf else 0.0
 
         # 权重动态更新
-        if i - last_weight_update >= 60:
-            hist_df = df.iloc[max(0, i - 250): i]
+        if signal_idx - last_weight_update >= 60:
+            hist_df = df.iloc[max(0, signal_idx - 250): signal_idx]
             factor_cols = [col for col in hist_df.columns if col not in NON_FACTOR_COLS]
             if factor_cols:
                 traditional_factor_cols = [col for col in factor_cols if col in current_weights]
@@ -290,7 +300,7 @@ def run_backtest_loop(
                 sum_w = sum(current_weights.values())
                 if sum_w > 0:
                     current_weights = {k: v / sum_w for k, v in current_weights.items()}
-                last_weight_update = i
+                last_weight_update = signal_idx
                 refreshed_weights = build_factor_weights(
                     df=df, base_weights=current_weights, transformer_weight=0.0
                 )
@@ -298,7 +308,7 @@ def run_backtest_loop(
 
         # 增强版市场状态判断
         if regime is None:
-            regime_info = get_market_regime_enhanced(market_data, date)
+            regime_info = get_market_regime_enhanced(market_data, signal_date)
             curr_regime = regime_info.regime
             regime_position_mult = regime_info.position_multiplier
         else:
@@ -310,22 +320,24 @@ def run_backtest_loop(
             }.get(regime, 0.5)
 
         p = params.get(curr_regime, params.get('neutral', params))
+        transformer_weight = p.get('transformer_weight', 0.0) if transformer_available else 0.0
         effective_weights = build_factor_weights(
             df=df,
             base_weights=current_weights,
-            transformer_weight=p.get('transformer_weight', 0.0),
+            transformer_weight=transformer_weight,
         )
-        df.at[date, 'Combined_Score'] = score = _compute_row_score(df, i, effective_weights)
+        df.at[signal_date, 'Combined_Score'] = score = _compute_row_score(df, signal_idx, effective_weights)
 
         # ========== 买入逻辑 ==========
         if position == 0 and score > p.get('buy_threshold', 0.6):
-            confidence_threshold = p.get('confidence_threshold', 0.5)
-            if transformer_conf < confidence_threshold:
-                continue
+            if transformer_available:
+                confidence_threshold = p.get('confidence_threshold', 0.5)
+                if transformer_conf < confidence_threshold:
+                    continue
 
-            transformer_threshold = p.get('transformer_buy_threshold', 0.6)
-            if transformer_prob < transformer_threshold:
-                continue
+                transformer_threshold = p.get('transformer_buy_threshold', 0.6)
+                if transformer_prob < transformer_threshold:
+                    continue
 
             if pd.isna(price) or price <= 0:
                 continue
@@ -335,8 +347,8 @@ def run_backtest_loop(
             if curr_regime == 'bear' and score < 0.85:
                 continue
 
-            if has_transformer_conf:
-                confidence = df['transformer_conf'].iloc[i]
+            if transformer_available and has_transformer_conf:
+                confidence = df['transformer_conf'].iloc[signal_idx]
                 if confidence < 0.6:
                     continue
 
@@ -351,7 +363,7 @@ def run_backtest_loop(
                     continue
 
             # ATR 动态仓位
-            atr = df['atr'].iloc[i] if not pd.isna(df['atr'].iloc[i]) else price * 0.02
+            atr = df['atr'].iloc[signal_idx] if not pd.isna(df['atr'].iloc[signal_idx]) else price * 0.02
             daily_vol = atr / price
             if daily_vol <= 0 or not np.isfinite(daily_vol):
                 daily_vol = 0.02
@@ -360,8 +372,8 @@ def run_backtest_loop(
             position_ratio = target_annual_vol / (daily_vol * np.sqrt(252) + 1e-6)
             position_ratio = min(max(position_ratio, 0.1), 1.0)
 
-            if has_pred_ret:
-                pred_ret = _get_raw_transformer_pred_ret(df, i)
+            if transformer_available and has_pred_ret:
+                pred_ret = _get_raw_transformer_pred_ret(df, signal_idx)
                 signal_strength = max(0.5, min(1.5, 1 + pred_ret / 0.05))
                 position_ratio *= signal_strength
 
@@ -370,7 +382,7 @@ def run_backtest_loop(
             position_ratio = min(max(position_ratio, 0.05), 1.0)
 
             # RSI 超买区降低仓位
-            rsi_status = _check_rsi_extreme(df, i)
+            rsi_status = _check_rsi_extreme(df, signal_idx)
             if rsi_status == 'overbought':
                 position_ratio *= 0.5
 
@@ -445,7 +457,7 @@ def run_backtest_loop(
                 continue
 
             # AI 强烈看空
-            if transformer_prob < p.get('transformer_sell_threshold', 0.3):
+            if transformer_available and transformer_prob < p.get('transformer_sell_threshold', 0.3):
                 sell_reason = 'ai_bearish'
 
             unrealized_profit = (price - buy_price_raw) / buy_price_raw
@@ -473,19 +485,19 @@ def run_backtest_loop(
                 sell_reason = 'signal_decay'
 
             # ★ 量价顶背离检测 -> 额外卖出信号
-            if sell_reason is None and _check_volume_divergence(df, i):
+            if sell_reason is None and _check_volume_divergence(df, signal_idx):
                 if unrealized_profit > 0.02:  # 至少有2%利润才因背离卖出
                     sell_reason = 'volume_divergence'
 
             # ★ RSI 超卖区不卖出（可能反弹）
             # RSI 极度超卖时跳过部分卖出信号（保留止损和硬规则）
-            rsi_status = _check_rsi_extreme(df, i)
+            rsi_status = _check_rsi_extreme(df, signal_idx)
             if sell_reason in ('signal_decay', 'time_stop') and rsi_status == 'oversold':
                 sell_reason = None  # 超卖区暂缓衰减/时间止损
 
             # 动态止盈
             if sell_reason is None:
-                atr = df['atr'].iloc[i] if not pd.isna(df['atr'].iloc[i]) else price * 0.02
+                atr = df['atr'].iloc[signal_idx] if not pd.isna(df['atr'].iloc[signal_idx]) else price * 0.02
                 tp_mult = p.get('take_profit_multiplier', 3.0)
                 if unrealized_profit >= tp_mult * (atr / buy_price_raw):
                     sell_reason = 'take_profit'
