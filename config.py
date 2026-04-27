@@ -168,6 +168,12 @@ class ModelConfig:
     sampler_min_weight: float = 0.05
     sampler_max_weight: float = 20.0
     sampler_replacement: bool = True
+    sampler_alpha_blend: float = 0.35
+    selection_metric_mode: str = "hybrid"  # val_loss | hybrid
+    selection_macro_f1_weight: float = 1.0
+    selection_ret_ic_weight: float = 5.0
+    selection_loss_weight: float = 0.08
+    selection_min_delta: float = 0.0005
     head_diag_enabled: bool = True
     head_diag_interval: int = 1
     head_diag_max_batches: int = 32
@@ -220,6 +226,12 @@ class ModelConfig:
             sampler_min_weight=_env_float("SAMPLER_MIN_WEIGHT", 0.05),
             sampler_max_weight=_env_float("SAMPLER_MAX_WEIGHT", 20.0),
             sampler_replacement=_env_bool("SAMPLER_REPLACEMENT", True),
+            sampler_alpha_blend=_env_float("SAMPLER_ALPHA_BLEND", 0.35),
+            selection_metric_mode=_env("SELECTION_METRIC_MODE", "hybrid").strip().lower(),
+            selection_macro_f1_weight=_env_float("SELECTION_MACRO_F1_WEIGHT", 1.0),
+            selection_ret_ic_weight=_env_float("SELECTION_RET_IC_WEIGHT", 5.0),
+            selection_loss_weight=_env_float("SELECTION_LOSS_WEIGHT", 0.08),
+            selection_min_delta=_env_float("SELECTION_MIN_DELTA", 0.0005),
             head_diag_enabled=_env_bool("HEAD_DIAG_ENABLED", True),
             head_diag_interval=max(1, _env_int("HEAD_DIAG_INTERVAL", 1)),
             head_diag_max_batches=max(1, _env_int("HEAD_DIAG_MAX_BATCHES", 32)),
@@ -345,12 +357,18 @@ class CacheConfig:
     """缓存校验与清理配置"""
     auto_delete_invalid_cache: bool = False
     strict_freshness_check: bool = True
+    fundamental_ttl_days: int = 30
+    ai_analysis_ttl_days: int = 14
+    force_refresh_fundamentals: bool = False
 
     @classmethod
     def from_env(cls) -> "CacheConfig":
         return cls(
             auto_delete_invalid_cache=_env_bool("CACHE_AUTO_DELETE_INVALID", False),
             strict_freshness_check=_env_bool("CACHE_STRICT_FRESHNESS_CHECK", True),
+            fundamental_ttl_days=max(0, _env_int("FUNDAMENTAL_CACHE_TTL_DAYS", 30)),
+            ai_analysis_ttl_days=max(0, _env_int("AI_ANALYSIS_CACHE_TTL_DAYS", 14)),
+            force_refresh_fundamentals=_env_bool("FORCE_REFRESH_FUNDAMENTALS", False),
         )
 
 

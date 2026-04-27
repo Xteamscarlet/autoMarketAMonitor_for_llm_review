@@ -6,11 +6,14 @@ import logging
 import os
 from typing import Any, Dict, List
 
+import pandas as pd
+
 from config import get_settings
-from data.fundamentals import load_fundamental_snapshot
+from data.fundamentals import is_cache_payload_fresh, load_fundamental_snapshot
 from llm import OpenAICompatibleClient
 
 logger = logging.getLogger(__name__)
+_FUNDAMENTAL_ANALYSIS_CACHE_VERSION = 1
 
 
 def _metric_value(metrics: Dict[str, Dict[str, Any]], name: str) -> Any:
@@ -164,12 +167,20 @@ def _llm_score(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 def analyze_fundamentals(code: str, name: str = "", refresh: bool = False) -> Dict[str, Any]:
     settings = get_settings()
     cache_path = os.path.join(settings.paths.ai_analysis_cache_dir, f"{code}_fundamental_analysis.json")
-    if os.path.exists(cache_path) and not refresh:
+    ttl_days = int(getattr(settings.cache, "ai_analysis_ttl_days", 14))
+    force_refresh = bool(getattr(settings.cache, "force_refresh_fundamentals", False))
+    should_refresh = refresh or force_refresh
+    if os.path.exists(cache_path) and not should_refresh:
         try:
             with open(cache_path, "r", encoding="utf-8") as file:
                 cached = json.load(file)
             # Do not reuse stale/empty fundamentals cache forever.
-            if cached.get("snapshot_available") and float(cached.get("coverage_ratio", 0.0)) > 0:
+            if (
+                cached.get("snapshot_available")
+                and float(cached.get("coverage_ratio", 0.0)) > 0
+                and is_cache_payload_fresh(cached, ttl_days)
+                and cached.get("cache_version") == _FUNDAMENTAL_ANALYSIS_CACHE_VERSION
+            ):
                 return cached
             logger.info("Ignore stale fundamental cache for %s due to empty snapshot", code)
         except Exception:
@@ -196,7 +207,11 @@ def analyze_fundamentals(code: str, name: str = "", refresh: bool = False) -> Di
             "code": code,
             "name": name,
             "snapshot_available": snapshot.get("raw_available", False),
+            "snapshot_fetched_at": snapshot.get("fetched_at"),
             "source_details": snapshot.get("source_details", {}),
+            "fetched_at": pd.Timestamp.utcnow().isoformat(),
+            "cache_ttl_days": ttl_days,
+            "cache_version": _FUNDAMENTAL_ANALYSIS_CACHE_VERSION,
         }
     )
     with open(cache_path, "w", encoding="utf-8") as file:

@@ -16,6 +16,16 @@ from config import get_settings, STOCK_CODES
 from agents.research_manager import analyze_stock
 
 
+def _safe_score(value, default=0.5):
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return float(default)
+    if pd.isna(score):
+        return float(default)
+    return max(0.0, min(1.0, score))
+
+
 def main():
     parser = argparse.ArgumentParser(description="集成预测")
     parser.add_argument("--codes", nargs="+", default=None, help="指定股票代码列表")
@@ -73,14 +83,14 @@ def main():
 
         research_bonus = 0.0
         if settings.analysis.blend_fundamental_score and fundamentals:
-            research_bonus += settings.analysis.fundamental_weight * (fundamentals.get("score", 0.5) - 0.5)
+            research_bonus += settings.analysis.fundamental_weight * (_safe_score(fundamentals.get("score")) - 0.5)
         if settings.analysis.blend_technical_score and technicals:
-            research_bonus += settings.analysis.technical_weight * (technicals.get("score", 0.5) - 0.5)
+            research_bonus += settings.analysis.technical_weight * (_safe_score(technicals.get("score")) - 0.5)
 
         row_dict["name"] = name
-        row_dict["fundamental_score"] = fundamentals.get("score")
+        row_dict["fundamental_score"] = _safe_score(fundamentals.get("score")) if fundamentals else None
         row_dict["fundamental_summary"] = fundamentals.get("summary")
-        row_dict["technical_score_ai"] = technicals.get("score")
+        row_dict["technical_score_ai"] = _safe_score(technicals.get("score")) if technicals else None
         row_dict["technical_summary_ai"] = technicals.get("summary")
         row_dict["research_bonus"] = round(float(research_bonus), 4)
         row_dict["enhanced_score"] = round(float(row_dict["expected_score"] + research_bonus), 4)

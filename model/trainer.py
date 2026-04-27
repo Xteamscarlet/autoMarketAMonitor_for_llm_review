@@ -377,22 +377,45 @@ class EarlyStopping:
     def __init__(self, patience=5, min_delta=0.002, mode='min'):
         self.patience = patience
         self.min_delta = min_delta
-        self.mode = mode
+        self.mode = 'max' if str(mode).lower() == 'max' else 'min'
         self.counter = 0
-        self.best_loss = None
+        self.best_value = None
         self.early_stop = False
 
-    def __call__(self, val_loss):
-        if self.best_loss is None:
-            self.best_loss = val_loss
-        elif val_loss < self.best_loss - self.min_delta:
-            self.best_loss = val_loss
+    def __call__(self, value):
+        if self.best_value is None:
+            self.best_value = value
+            return False
+
+        if self.mode == 'min':
+            improved = value < self.best_value - self.min_delta
+        else:
+            improved = value > self.best_value + self.min_delta
+
+        if improved:
+            self.best_value = value
             self.counter = 0
         else:
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
         return self.early_stop
+
+
+def _compute_selection_value(ema_metrics: Dict[str, float], mc) -> float:
+    mode = str(getattr(mc, "selection_metric_mode", "val_loss")).strip().lower()
+    val_loss = float(ema_metrics.get("val_ema_loss", float("inf")))
+    macro_f1 = float(ema_metrics.get("val_ema_macro_f1", 0.0))
+    ret_ic = float(ema_metrics.get("val_ema_ret_ic", 0.0))
+
+    if mode == "hybrid":
+        return (
+            float(getattr(mc, "selection_macro_f1_weight", 1.0)) * macro_f1
+            + float(getattr(mc, "selection_ret_ic_weight", 5.0)) * ret_ic
+            - float(getattr(mc, "selection_loss_weight", 0.08)) * val_loss
+        )
+
+    return val_loss
 
 
 def evaluate_model(
@@ -961,6 +984,17 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             float(np.min(sample_weights)),
             float(np.max(sample_weights)),
         )
+        # Avoid over-correcting class imbalance twice (sampler + focal alpha).
+        alpha_blend = float(np.clip(getattr(mc, "sampler_alpha_blend", 0.35), 0.0, 1.0))
+        raw_alpha = class_weights.detach().cpu().numpy()
+        tempered_alpha = (1.0 - alpha_blend) * np.ones_like(raw_alpha) + alpha_blend * raw_alpha
+        class_weights = torch.FloatTensor(tempered_alpha).to(device)
+        logger.warning(
+            "Tempered focal alpha due to balanced sampler: blend=%.2f raw=%s tempered=%s",
+            alpha_blend,
+            np.array2string(raw_alpha, precision=4, suppress_small=False),
+            np.array2string(tempered_alpha, precision=4, suppress_small=False),
+        )
     else:
         logger.warning("Balanced sampler disabled: using shuffled batches")
 
@@ -1021,9 +1055,13 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     swa_model = AveragedModel(model)
     swa_start = int(mc.epochs * mc.swa_start_ratio)  # ★ 修复1: 使用 config 中的 swa_start_ratio
     topk = TopKCheckpoint(k=mc.topk_save_count, save_dir=pc.topk_checkpoint_dir)
+    selection_mode = str(getattr(mc, "selection_metric_mode", "val_loss")).strip().lower()
+    selection_stop_mode = "max" if selection_mode == "hybrid" else "min"
     # ★ 修复1: patience 从 config 读取（默认 6），让 30 epoch 训练有足够机会收敛
     early_stopping = EarlyStopping(
-        patience=mc.early_stop_patience, min_delta=mc.early_stop_min_delta,
+        patience=mc.early_stop_patience,
+        min_delta=float(getattr(mc, "selection_min_delta", mc.early_stop_min_delta)),
+        mode=selection_stop_mode,
     )
 
     # 修复: Focal Loss 替代 CrossEntropyLoss
@@ -1052,6 +1090,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     start_epoch = 0
     best_val_loss = float('inf')
+    best_selection_value = float('-inf') if selection_stop_mode == "max" else float('inf')
     latest_checkpoint = max(glob.glob("model_epoch_*.pth"), key=os.path.getctime, default=None)
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=device)
@@ -1083,7 +1122,7 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     cls_loss_weight_final = float(mc.cls_loss_weight_final)
     ret_loss_weight_initial = float(mc.ret_loss_weight_initial)
     ret_loss_weight_final = float(mc.ret_loss_weight_final)
-    prev_epoch_val_loss = None
+    prev_epoch_selection_value = None
     converge_stall_count = 0
 
     for epoch in range(start_epoch, mc.epochs):
@@ -1260,14 +1299,26 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         # Use EMA val_loss for model selection
         avg_val_loss = ema_metrics['val_ema_loss']
+        selection_value = _compute_selection_value(ema_metrics, mc)
+        logger.warning(
+            "Model selection: mode=%s value=%.6f (macro_f1=%.4f ret_ic=%.4f val_loss=%.4f)",
+            selection_mode,
+            selection_value,
+            float(ema_metrics['val_ema_macro_f1']),
+            float(ema_metrics['val_ema_ret_ic']),
+            float(avg_val_loss),
+        )
 
-        if prev_epoch_val_loss is not None:
-            epoch_improvement = prev_epoch_val_loss - avg_val_loss
+        if prev_epoch_selection_value is not None:
+            if selection_stop_mode == "max":
+                epoch_improvement = selection_value - prev_epoch_selection_value
+            else:
+                epoch_improvement = prev_epoch_selection_value - selection_value
             if epoch_improvement < mc.convergence_min_delta:
                 converge_stall_count += 1
             else:
                 converge_stall_count = 0
-        prev_epoch_val_loss = avg_val_loss
+        prev_epoch_selection_value = selection_value
 
         checkpoint_path = f"model_epoch_{epoch + 1}.pth"
         torch.save({
@@ -1276,15 +1327,27 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
             'optimizer_state_dict': optimizer.state_dict(),
             'scaler_state_dict': grad_scaler.state_dict(),
             'loss': avg_val_loss,
+            'selection_mode': selection_mode,
+            'selection_value': float(selection_value),
             'feature_names': list(FEATURES),
             'target_source': 'raw_close',
         }, checkpoint_path)
 
         # 保存最佳模型（EMA）
-        if avg_val_loss <= best_val_loss:
-            best_val_loss = avg_val_loss
+        best_val_loss = min(best_val_loss, avg_val_loss)
+        if selection_stop_mode == "max":
+            is_better_selection = selection_value > best_selection_value + float(getattr(mc, "selection_min_delta", 0.0))
+        else:
+            is_better_selection = selection_value < best_selection_value - float(getattr(mc, "selection_min_delta", 0.0))
+        if is_better_selection:
+            best_selection_value = selection_value
             torch.save(ema.get_model().state_dict(), pc.model_path)
-            logger.warning(f"Saved improved EMA model with val_loss: {best_val_loss:.4f}")
+            logger.warning(
+                "Saved improved EMA model by selection metric: mode=%s value=%.6f val_loss=%.4f",
+                selection_mode,
+                best_selection_value,
+                avg_val_loss,
+            )
 
         # ★ 修复4: TopK 保存"在线模型"权重，与 EMA/SWA 形成真正的 ensemble 多样性
         # 之前保存的是 ema.get_model() 导致 TopK 与 EMA 几乎完全相同
@@ -1292,14 +1355,18 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
         torch.cuda.empty_cache()
 
-        if early_stopping(avg_val_loss):
-            logger.warning("Early stopping triggered")
+        if early_stopping(selection_value):
+            logger.warning(
+                "Early stopping triggered on selection metric: mode=%s best=%.6f",
+                selection_mode,
+                float(early_stopping.best_value if early_stopping.best_value is not None else selection_value),
+            )
             break
 
         if converge_stall_count >= mc.convergence_patience:
             logger.warning(
                 "Convergence early stopping triggered: "
-                f"EMA val_loss improvement < {mc.convergence_min_delta:.4f} "
+                f"selection improvement < {mc.convergence_min_delta:.4f} "
                 f"for {mc.convergence_patience} consecutive epochs"
             )
             break
@@ -1322,6 +1389,8 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
     if training_metadata is not None:
         training_metadata["created_at"] = pd.Timestamp.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
         training_metadata["best_val_loss"] = float(best_val_loss) if np.isfinite(best_val_loss) else None
+        training_metadata["selection_mode"] = selection_mode
+        training_metadata["best_selection_value"] = float(best_selection_value) if np.isfinite(best_selection_value) else None
         training_metadata["last_val_loss"] = float(avg_val_loss) if np.isfinite(avg_val_loss) else None
         with open(pc.model_metadata_path, "w", encoding="utf-8") as f:
             json.dump(training_metadata, f, ensure_ascii=False, indent=2)
@@ -1329,4 +1398,5 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
     logger.warning(f"EMA best model saved: {pc.model_path}")
     logger.warning(f"Top-K ensemble checkpoints: {pc.topk_checkpoint_dir}/")
+    logger.warning(f"selection_mode: {selection_mode}, best_selection_value: {best_selection_value:.6f}")
     logger.warning(f"last_val_loss: {avg_val_loss:.4f}, best_val_loss: {best_val_loss:.4f}")

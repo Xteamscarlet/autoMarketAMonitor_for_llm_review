@@ -153,9 +153,11 @@ def _compute_research_bonus(settings, research: Dict) -> float:
 
     bonus = 0.0
     if fundamentals and settings.analysis.blend_fundamental_score:
-        bonus += settings.analysis.fundamental_weight * (float(fundamentals.get("score", 0.5)) - 0.5)
+        score = _safe_float(fundamentals.get("score"))
+        bonus += settings.analysis.fundamental_weight * ((score if score is not None else 0.5) - 0.5)
     if technicals and settings.analysis.blend_technical_score:
-        bonus += settings.analysis.technical_weight * (float(technicals.get("score", 0.5)) - 0.5)
+        score = _safe_float(technicals.get("score"))
+        bonus += settings.analysis.technical_weight * ((score if score is not None else 0.5) - 0.5)
     return float(bonus)
 
 
