@@ -660,14 +660,14 @@ def _compute_epoch_metrics(
             valid_batches += 1
             all_preds.extend(logits.argmax(dim=-1).cpu().numpy().tolist())
             all_labels.extend(lab.cpu().numpy().tolist())
-            all_ret_pred.extend((ret_pred.squeeze() * ret_scale).cpu().numpy().tolist())
+            all_ret_pred.extend((ret_pred.squeeze() * ret_scale).float().cpu().numpy().tolist())
             all_ret_true.extend(rets.squeeze().cpu().numpy().tolist())
 
             if diag_max_batches > 0 and diag_batches < diag_max_batches:
                 diag_labels.extend(lab.cpu().numpy().astype(np.int64).tolist())
-                diag_probs.append(probs.detach().cpu().numpy())
-                diag_logits.append(logits.detach().cpu().numpy())
-                diag_ret_pred.append((ret_pred.squeeze() * ret_scale).detach().cpu().reshape(-1).numpy())
+                diag_probs.append(probs.detach().float().cpu().numpy())
+                diag_logits.append(logits.detach().float().cpu().numpy())
+                diag_ret_pred.append((ret_pred.squeeze() * ret_scale).detach().float().cpu().reshape(-1).numpy())
                 diag_ret_true.append(rets.squeeze().detach().cpu().reshape(-1).numpy())
                 diag_batches += 1
 
@@ -1155,9 +1155,9 @@ def train_model(settings: Optional[AppConfig] = None) -> None:
 
             if should_collect_head_diag and train_diag_batches < mc.head_diag_max_batches:
                 train_diag_labels.extend(labels.detach().cpu().numpy().astype(np.int64).tolist())
-                train_diag_probs.append(probs.detach().cpu().numpy())
-                train_diag_logits.append(logits.detach().cpu().numpy())
-                train_diag_ret_pred.append((ret_pred.squeeze() * mc.ret_target_scale).detach().cpu().reshape(-1).numpy())
+                train_diag_probs.append(probs.detach().float().cpu().numpy())
+                train_diag_logits.append(logits.detach().float().cpu().numpy())
+                train_diag_ret_pred.append((ret_pred.squeeze() * mc.ret_target_scale).detach().float().cpu().reshape(-1).numpy())
                 train_diag_ret_true.append(rets.squeeze().detach().cpu().reshape(-1).numpy())
                 train_diag_batches += 1
 
